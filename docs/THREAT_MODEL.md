@@ -66,7 +66,7 @@ MergeLatch aims to help maintainers and developers notice security-sensitive cha
 
 ### 4.4 Local repository threats
 
-- Git hooks, `.gitattributes` filters, and configuration that execute commands on clone, checkout, or commit.
+- Git hooks and filters that run commands on checkout, commit, or merge once they are enabled on a machine. Hooks are not transferred by `git clone`, but a repository can ship hook scripts, a hook-manager configuration, or setup instructions that install them or point `core.hooksPath` at them. `.gitattributes` filters only run if a matching filter driver is configured locally.
 - Editor, task runner, and IDE configuration that runs commands when a folder is opened.
 - Build scripts and package manager lifecycle scripts invoked by routine developer commands.
 - Path traversal, symlink, and archive-extraction tricks aimed at the scanner itself.
