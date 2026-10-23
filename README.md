@@ -101,15 +101,15 @@ See [the implementation playbook](docs/BUILD_PLAN.md) for the steps from reposit
 
 ## How to help
 
-The project is in planning. Once the source repositories are created, we will publish a contribution guide, issue templates, a security disclosure process, and repeatable tests. Please do not submit real malware samples or secrets to public issues.
+The project is in planning. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes and [the threat model](docs/THREAT_MODEL.md) for the risks the design is meant to address. Issue templates and repeatable tests will be added later. Please do not submit real malware samples or secrets to public issues.
 
 ## Security
 
-If you believe you have found a vulnerability in MergeLatch itself, use the private vulnerability-reporting mechanism documented in the repository once it is configured. Do not disclose exploit details or credentials in a public issue.
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability in MergeLatch itself. Do not disclose exploit details or credentials in a public issue.
 
 ## License
 
-A repository license will be selected and committed before code is published. Until then, this planning document should not be treated as a grant of software-use rights.
+MergeLatch is licensed under the [Apache License 2.0](LICENSE).
 
 ---
 

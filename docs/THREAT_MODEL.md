@@ -1,0 +1,155 @@
+# MergeLatch Threat Model
+
+**Status:** design document. MergeLatch has no working scanner yet. This document describes the threats the project intends to address and the requirements its design must meet. It does not claim that any protection is implemented. Each section should be revised as components are built and tested.
+
+## 1. Purpose
+
+MergeLatch aims to help maintainers and developers notice security-sensitive changes in Git repositories before they are merged or run. This document defines what is in scope, what is not, how trust is divided between components, and which properties must always hold.
+
+## 2. Scope
+
+### In scope (intended)
+
+- Malicious or compromised pull requests, including changes to scripts, build files, and policy files.
+- Dependency and supply-chain changes in common manifests and lockfiles.
+- Dangerous GitHub Actions workflow configurations.
+- Suspicious content in locally cloned repositories, as seen by the local scanner.
+- Code produced by AI coding agents, treated as untrusted input like any other contribution.
+- Failures of MergeLatch itself: crashes, bad policy, stale rules, and tampering with its own configuration.
+
+### Out of scope
+
+- Compromise of a maintainer's account, device, or GitHub organization. MergeLatch can reduce exposure but cannot defend against an attacker holding maintainer credentials.
+- Vulnerabilities in GitHub, the operating system, Git, or the Rust toolchain.
+- Runtime behavior of software after it is merged and deployed.
+- Confirming that a change is functionally correct. A passing scan is not a substitute for tests or human review.
+- Detecting every novel attack. MergeLatch makes no guarantee of a malware-free repository.
+- Social engineering of reviewers outside what is visible in repository content.
+- Network-level attacks on end-user machines.
+
+## 3. Assets
+
+- The integrity of protected branches and release artifacts.
+- Repository secrets and tokens available to CI.
+- Maintainer and contributor machines that clone or scan code.
+- The integrity of MergeLatch rules, policies, and scan results.
+- Private repository contents processed locally.
+
+## 4. Threats
+
+### 4.1 Malicious pull requests
+
+- Install hooks, build scripts, or test code that run attacker commands when a maintainer or CI builds the change.
+- Obfuscated or encoded payloads, and logic that is only active under certain conditions.
+- Changes that weaken security controls, such as editing the scanner policy, CODEOWNERS, or branch rules in the same PR that needs to pass them.
+- Large or noisy diffs that hide a small malicious change.
+- Misleading PR titles, descriptions, branch names, and file names, including attacker-controlled text intended to manipulate a scanner, a reviewer, or an AI agent.
+- Binary files, symlinks, and unusual file modes that conceal content or point outside the repository.
+
+### 4.2 Dependency and supply-chain attacks
+
+- Newly added or version-changed dependencies, including typosquatted or recently published packages.
+- Lockfile changes that do not match manifest changes, or that point to unexpected registries or Git sources.
+- Install-time scripts in dependencies.
+- Unpinned or mutable references, such as floating tags or branches.
+- Tampering with scanner rules, vulnerability data, or release artifacts of MergeLatch itself.
+
+### 4.3 Dangerous GitHub Actions configurations
+
+- `pull_request_target` or `workflow_run` workflows that check out or execute untrusted PR code with elevated permissions or secrets.
+- Overbroad `permissions`, or missing explicit permissions.
+- Untrusted values (titles, branch names, issue bodies) interpolated into shell commands or scripts.
+- Third-party actions referenced by mutable tags instead of commit SHAs.
+- Self-hosted runners exposed to untrusted code.
+- Secrets exposed to forked pull requests, or written to logs and artifacts.
+- Workflow changes made in the same PR whose checks they control.
+
+### 4.4 Local repository threats
+
+- Git hooks, `.gitattributes` filters, and configuration that execute commands on clone, checkout, or commit.
+- Editor, task runner, and IDE configuration that runs commands when a folder is opened.
+- Build scripts and package manager lifecycle scripts invoked by routine developer commands.
+- Path traversal, symlink, and archive-extraction tricks aimed at the scanner itself.
+- Files crafted to cause resource exhaustion in the scanner, such as very large files or deeply nested structures.
+
+### 4.5 AI-agent-generated code risks
+
+- Agent output may contain insecure code, invented dependencies, or malicious content introduced through prompt injection from repository text.
+- An agent may attempt to alter its own checks, policies, or workflow files.
+- Agent-supplied claims that checks passed cannot be trusted. Results must come from an independent run.
+- Agents must not be granted enforcement, merge, or secret-access privileges.
+
+## 5. Trust boundaries and permission separation
+
+| Boundary | Trusted side | Untrusted side |
+| --- | --- | --- |
+| Repository content | MergeLatch engine and base-branch policy | PR files, branch names, titles, bodies, and filenames |
+| CI scanning | Workflow definitions on the protected base branch | Code from the PR head, including forks |
+| Reporting | A separate reporting step with narrowly scoped write access | The scanning step that processes untrusted input |
+| Merge authority | Branch protection, required human reviews, and GitHub's own merge controls | Scan results alone, and any agent claims |
+| Local scanning | User-approved directories | Everything inside them |
+| Rules and policy | Signed or verified releases and the base-branch policy | Policy changes proposed in a PR |
+
+Design principles:
+
+- The scanner reads untrusted content as data. It never executes it.
+- The scanning job has read-only permissions and no secrets. Any job that needs write access runs separately and does not process untrusted content.
+- Policy and workflow files are evaluated from the trusted base revision, not from the PR under review.
+- Merge permission is never held by the same component that parses untrusted input.
+- Changes to workflows, policy, CODEOWNERS, and release configuration require human approval.
+
+## 6. False positives, missed detections, and scanner failures
+
+- **False positives:** legitimate scripts can resemble malicious ones. Findings must show evidence and the triggering rule so a reviewer can judge them. Dismissals should require a recorded reason.
+- **Missed detections:** rule-based scanning will miss some attacks, especially new or heavily obfuscated ones. Documentation must not imply complete coverage. Detection quality should be measured on test fixtures before any claim is made.
+- **Scanner failures:** a crash, timeout, invalid policy, unreadable file, or unavailable mandatory data must produce an explicit "review required" or failing result. It must never be reported as a clean pass.
+- **Stale data:** rule and vulnerability data have an age. The result must show the ruleset version, and stale data must be visible to the user.
+- **Evasion:** an attacker who can read the rules can try to avoid them. Rules should be treated as one layer, not the only control.
+
+## 7. Privacy and offline behavior
+
+- Scanning of local repositories happens on the user's device by default.
+- Source code, file paths, and findings are not uploaded without explicit, informed consent.
+- The local scanner works offline. When it cannot refresh rules or data, it reports the age of what it is using and does not silently skip checks.
+- Repository discovery is limited to folders the user has authorized.
+- The desktop scanner does not require GitHub access.
+- Any optional AI integration is off by default and must state what data it would send before sending it.
+- Logs and reports must not contain secrets that the scanner encountered.
+
+## 8. Security invariants
+
+These properties must hold in every release. Each must have at least one automated acceptance test before MergeLatch claims it.
+
+1. **Untrusted content is never executed** by the scanner, in any mode.
+2. **No clean pass on failure.** Any scanner error, timeout, invalid policy, or missing mandatory input yields a non-passing result.
+3. **Least privilege in CI.** The scanning job has read-only repository permission and no access to secrets. Write and merge permissions are never available to code that parses untrusted PR content.
+4. **Trusted policy source.** Policy, rules, and workflow definitions used for a gate come from the protected base, not from the PR being evaluated.
+5. **Self-protection.** A PR that modifies workflows, policy, CODEOWNERS, or release configuration cannot pass the gate without human approval.
+6. **Scan never grants merge authority.** A passing scan is one input to branch protection, not a replacement for required reviews or tests.
+7. **Reproducible, attributable results.** Each result records the scanner version, ruleset identity, policy hash, and analyzed revision.
+8. **Local-first privacy.** No repository content leaves the device without explicit consent.
+9. **Bounded resources.** The scanner enforces limits on file size, depth, and time, and reports when a limit was hit.
+10. **No destructive actions.** The scanner reports findings. It does not delete or modify files on its own.
+
+## 9. Acceptance-test requirements
+
+Before a component is described as protecting against a threat in this document, the project must provide:
+
+- A positive fixture that the scanner flags, and a negative fixture that it does not flag, for each rule.
+- Tests for each invariant in section 8, including failure injection: crashes, timeouts, malformed input, and unreadable files must not produce a pass.
+- Tests that confirm fixtures are inert and are never executed.
+- Tests that confirm untrusted PR input cannot alter the policy or workflow used for the gate.
+- Workflow tests that confirm minimum permissions and that no secrets are available to the scanning job.
+- Resource-limit tests with oversized, deeply nested, and adversarial inputs.
+- Offline-mode tests that confirm behavior with stale or unavailable data.
+- Published false-positive and detection results for the fixture set, with the set's limitations described.
+
+## 10. Open questions
+
+- Whether a standalone GitHub Action can serve as a sufficiently independent control if a PR can alter files related to its own checks, or whether a separate trusted service is needed. See the build plan for the current position.
+- Which third-party data sources and tools to rely on, and how to verify their integrity.
+- How to distribute and verify rule updates without a hosted backend.
+
+## 11. Maintenance
+
+Review this document whenever a component is added, a trust boundary changes, or a security incident occurs. Changes to it are security-sensitive and need additional review as described in [CONTRIBUTING.md](../CONTRIBUTING.md).
