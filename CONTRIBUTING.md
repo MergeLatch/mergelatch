@@ -30,12 +30,12 @@ By contributing, you agree that your contributions are licensed under the [Apach
 - Keep pull requests small and focused on one purpose.
 - Explain the security implications of the change, even if the answer is "none".
 - Describe remaining risks and known limitations honestly.
-- A maintainer must approve before merge. Authors do not merge their own pull requests unless the project has recorded an exception.
+- Where a second reviewer is available, a maintainer other than the author must approve before merge. See "Sole-maintainer period" below for the temporary procedure.
 - Be prepared to revise. Maintainers may ask for changes or decline a proposal.
 
 ## Security-sensitive changes
 
-The following require additional review by a maintainer who did not write the change, and the pull request description must explain the security impact:
+The following require independent review by a maintainer who did not write the change where one is available, and the pull request description must explain the security impact:
 
 - Anything under `.github/`, including workflows, actions, and CODEOWNERS.
 - Authentication, tokens, permissions, or secrets handling.
@@ -49,6 +49,17 @@ Workflow changes must follow these rules:
 - Do not run untrusted pull request code with write permissions or access to secrets. Treat `pull_request_target` and `workflow_run` as dangerous and justify any use.
 - Do not interpolate untrusted values, such as branch names, titles, or bodies, directly into shell commands.
 - Pin third-party actions to a full commit SHA.
+
+### Sole-maintainer period
+
+The project currently has one maintainer, so independent review is not always possible. Until a second reviewer exists, the following temporary procedure applies. It is not equivalent to independent approval and must not be described as such.
+
+1. The owner opens a pull request for every change, including their own. Direct pushes to `main` are not used.
+2. The owner reviews their own diff after a pause, using the pull request template, and records in the pull request that this was an owner review and not an independent approval.
+3. For security-sensitive changes, the owner states the security impact, the checks performed, and the remaining risks, and marks the pull request as "owner-reviewed, not independently reviewed".
+4. The owner requests outside review where practical, for example by asking a trusted contributor to comment, and records the outcome.
+5. The owner merges manually. Automatic merging is not enabled for security-sensitive changes, and is not used for any change until suitable protections, such as branch rules and required checks, are in place and documented.
+6. When a second maintainer joins, security-sensitive paths move to independent review, and this section should be removed or updated.
 
 ## Reporting vulnerabilities and sharing samples
 
