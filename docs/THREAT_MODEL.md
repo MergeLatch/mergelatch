@@ -109,6 +109,8 @@ Design principles:
 ## 7. Privacy and offline behavior
 
 - Scanning of local repositories happens on the user's device by default.
+- The local scanner and the GitHub-hosted CI scan are different privacy contexts. The local scanner processes files on the user's device. A CI scan runs on GitHub-hosted runners, so the repository content it reads is processed on GitHub's infrastructure, which is the same place the repository is already hosted. For private repositories, enabling the CI scan means GitHub Actions processes private code under the repository owner's GitHub terms and settings. Documentation must make this distinction clear.
+- CI scan results, such as logs, annotations, and uploaded artifacts, may be visible to anyone who can read the repository or its workflow runs. For public repositories they are public, so they must not contain secrets.
 - Source code, file paths, and findings are not uploaded without explicit, informed consent.
 - The local scanner works offline. When it cannot refresh rules or data, it reports the age of what it is using and does not silently skip checks.
 - Repository discovery is limited to folders the user has authorized.
