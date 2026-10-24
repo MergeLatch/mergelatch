@@ -27,6 +27,7 @@ import os
 import pwd
 import re
 import resource
+import signal
 import stat
 import string
 import subprocess
@@ -349,6 +350,29 @@ def load_state(state_dir: str) -> dict:
     return state
 
 
+def run_build_process(argv: list, cwd: str, env: dict, timeout: float) -> int:
+    """Runs the build script in its own session and process group.
+
+    On timeout the whole group is killed, not just the script: cargo, rustc,
+    linkers, and anything they started would otherwise keep running after the
+    Action reports a failure. The group is killed before the script is reaped,
+    because an unreaped child keeps its process group ID from being reused. The
+    script is then reaped, and subprocess.TimeoutExpired is raised for the
+    caller to report.
+    """
+    process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                               start_new_session=True)
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        raise
+
+
 def build(env: dict, home: str | None = None) -> int:
     """Builds the scanner with a controlled environment.
 
@@ -379,13 +403,12 @@ def build(env: dict, home: str | None = None) -> int:
         "MLA_CONTROLLED_ENV": "1",
     }, home)
     try:
-        result = subprocess.run([bash, "--noprofile", "--norc", script], cwd=action_root, env=child,
-                                stdin=subprocess.DEVNULL, timeout=BUILD_TIMEOUT_SECONDS, check=False)
+        return run_build_process([bash, "--noprofile", "--norc", script], action_root, child,
+                                 BUILD_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
-        raise ActionError("the scanner build exceeded its time limit") from exc
+        raise ActionError("the scanner build exceeded its time limit and was stopped") from exc
     except OSError as exc:
         raise ActionError("the scanner build could not be started: %s" % exc.strerror) from exc
-    return result.returncode
 
 
 def scan(env: dict) -> int:
