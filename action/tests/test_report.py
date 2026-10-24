@@ -397,7 +397,13 @@ class ProvenanceReporting(unittest.TestCase):
 
     def test_the_pinned_action_revision_is_shown_with_its_repository(self):
         _, text = self.summary(report(), 0)
-        self.assertIn("| Action revision | MergeLatch/mergelatch\\@%s |" % SHA_ACTION, text)
+        self.assertIn("| Action revision | `MergeLatch/mergelatch@%s` |" % SHA_ACTION, text)
+        # GitHub shortens "owner/repo@sha" in ordinary text, so it must be inside a code span.
+        self.assertNotIn("MergeLatch/mergelatch\\@", text)
+
+    def test_the_full_sha_survives_when_the_repository_is_unknown(self):
+        _, text = self.summary(report(), 0, ctx=context(action_repository=None))
+        self.assertIn("| Action revision | `%s` |" % SHA_ACTION, text)
 
     def test_a_tag_or_branch_reference_is_called_out(self):
         _, text = self.summary(report(), 0, ctx=context(action_ref="v1", action_sha=None))
