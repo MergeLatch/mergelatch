@@ -1,0 +1,450 @@
+name: Action F-07 trial (inherited environment at start-up)
+
+# A harmless, controlled characterization of audit finding F-07: which
+# inherited environment settings can affect the Python helper
+# (`/usr/bin/python3 -I`) or the system runtime BEFORE the Action's own code
+# can validate anything, and which cannot.
+#
+# Every probe observes with marker files or printed flags. The only compiled
+# code is a four-line shared object whose constructor creates an empty file
+# named after its process ID; nothing is injected into other software, no
+# system file or binary is changed, and no pull request code is run (the pull
+# request is checked out and its workflow files are read as data by the
+# scanner, like the other trials). The Action is loaded by full commit SHA,
+# never from the checkout.
+#
+# The jobs pass when the behaviour recorded in docs/REVIEW_READINESS.md
+# (finding F-07) is reproduced, including the cases that show a limitation. It
+# is advisory, not a security gate or a required check. It runs on
+# pull_request with a read-only token and no secrets, and only when a pull
+# request changes this file, because some probes intentionally load a marker
+# library into the interpreter.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/action-f07-trial.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-f07-trial-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # The commit GitHub downloads and runs as the Action (main after pull request #24).
+  ACTION_SHA: e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+
+jobs:
+  # 1. What Python's isolated mode ignores. Each setting is applied to a control run
+  #    (plain python3, which must honor it) and to `python3 -I` (which must not).
+  python-isolation:
+    name: Python isolated mode vs inherited PYTHON settings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Probe the control and isolated interpreters
+        run: |
+          set -uo pipefail
+          lab="${RUNNER_TEMP}/f07-python"
+          mkdir -p "${lab}/pypath" "${lab}/cwd" "${lab}/markers-plain" "${lab}/markers-isolated"
+          cat > "${lab}/probe.py" <<'PY'
+          import json, sys
+          import colorsys  # shadowed by a file in the working directory when the working directory is on sys.path
+          print(json.dumps({
+              "isolated": sys.flags.isolated, "ignore_environment": sys.flags.ignore_environment,
+              "no_user_site": sys.flags.no_user_site, "hash_randomization": sys.flags.hash_randomization,
+              "dont_write_bytecode": bool(sys.dont_write_bytecode), "utf8_mode": sys.flags.utf8_mode,
+              "warnoptions": list(sys.warnoptions), "path0": sys.path[0] if sys.path else None,
+          }, sort_keys=True))
+          PY
+          # Files that would run if the interpreter honored the setting or the working directory.
+          printf 'import os\nopen(os.environ["F07_MARKERS"] + "/sitecustomize", "w").close()\n' > "${lab}/pypath/sitecustomize.py"
+          printf 'import os\nopen(os.environ["F07_MARKERS"] + "/usercustomize", "w").close()\n' > "${lab}/pypath/usercustomize.py"
+          printf 'import os\nopen(os.environ["F07_MARKERS"] + "/cwd-module", "w").close()\n' > "${lab}/cwd/colorsys.py"
+
+          settings=(
+            "PYTHONPATH=${lab}/pypath"
+            "PYTHONHASHSEED=0"
+            "PYTHONDONTWRITEBYTECODE=1"
+            "PYTHONWARNINGS=error"
+            "PYTHONUTF8=1"
+            "PYTHONIOENCODING=ascii"
+          )
+          run_probe() { # markers-dir, then the interpreter command
+            local markers="$1"; shift
+            (cd "${lab}/cwd" && env -i PATH=/usr/bin:/bin HOME="${HOME}" LC_ALL=C.UTF-8 F07_MARKERS="${markers}" "${settings[@]}" "$@" -c "$(cat "${lab}/probe.py")")
+          }
+          plain="$(run_probe "${lab}/markers-plain" /usr/bin/python3)" || true
+          isolated="$(run_probe "${lab}/markers-isolated" /usr/bin/python3 -I)" || true
+          echo "plain    : ${plain}"
+          echo "isolated : ${isolated}"
+
+          # PYTHONHOME: a bogus value stops a plain interpreter and not an isolated one.
+          PYTHONHOME="${lab}/no-such-home" /usr/bin/python3 -c pass >/dev/null 2>&1; plain_home=$?
+          PYTHONHOME="${lab}/no-such-home" /usr/bin/python3 -I -c pass >/dev/null 2>&1; isolated_home=$?
+
+          mark() { if [ -e "$1" ]; then echo ran; else echo "did not run"; fi; }
+          {
+            echo '### F-07: Python isolated mode (/usr/bin/python3 -I) against inherited settings'
+            echo
+            echo '| Observation | Plain python3 (control) | python3 -I |'
+            echo '|---|---|---|'
+            echo "| sitecustomize found through PYTHONPATH | $(mark "${lab}/markers-plain/sitecustomize") | $(mark "${lab}/markers-isolated/sitecustomize") |"
+            echo "| usercustomize (needs the user site) | $(mark "${lab}/markers-plain/usercustomize") | $(mark "${lab}/markers-isolated/usercustomize") |"
+            echo "| module from the working directory | $(mark "${lab}/markers-plain/cwd-module") | $(mark "${lab}/markers-isolated/cwd-module") |"
+            echo "| exit status with a bogus PYTHONHOME | ${plain_home} | ${isolated_home} |"
+            echo
+            echo '```'
+            echo "plain    : ${plain}"
+            echo "isolated : ${isolated}"
+            echo '```'
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+          fail() { echo "::error title=F-07 trial::$1"; exit 1; }
+          # Controls must be sensitive, or the isolated results mean nothing.
+          [ -e "${lab}/markers-plain/sitecustomize" ] || fail "control: PYTHONPATH sitecustomize did not run in plain python3"
+          [ -e "${lab}/markers-plain/cwd-module" ] || fail "control: the working directory was not on the plain sys.path"
+          [ "${plain_home}" != 0 ] || fail "control: a bogus PYTHONHOME did not stop plain python3"
+          # The protections.
+          [ ! -e "${lab}/markers-isolated/sitecustomize" ] || fail "PYTHONPATH sitecustomize ran under -I"
+          [ ! -e "${lab}/markers-isolated/usercustomize" ] || fail "usercustomize ran under -I"
+          [ ! -e "${lab}/markers-isolated/cwd-module" ] || fail "a module in the working directory was imported under -I"
+          [ "${isolated_home}" = 0 ] || fail "a bogus PYTHONHOME stopped python3 -I"
+          printf '%s' "${isolated}" | grep -q '"isolated": 1' || fail "isolated flag was not set"
+          printf '%s' "${isolated}" | grep -q '"ignore_environment": 1' || fail "ignore_environment flag was not set"
+          printf '%s' "${isolated}" | grep -q '"hash_randomization": 1' || fail "PYTHONHASHSEED=0 affected -I"
+          printf '%s' "${isolated}" | grep -q '"dont_write_bytecode": false' || fail "PYTHONDONTWRITEBYTECODE affected -I"
+          printf '%s' "${isolated}" | grep -q '"warnoptions": \[\]' || fail "PYTHONWARNINGS affected -I"
+          printf '%s' "${isolated}" | grep -q '"utf8_mode": 0' || fail "PYTHONUTF8 affected -I"
+          echo "F-07 Python isolation behaviour reproduced"
+
+  # 2. What acts before any Python code runs: the dynamic loader.
+  loader-boundary:
+    name: Loader settings act before Python starts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build a marker library and copy a fixture with one real finding
+        run: |
+          set -euo pipefail
+          lab="${RUNNER_TEMP}/f07-loader"
+          mkdir -p "${lab}/markers-direct" "${lab}/markers-action" "${lab}/empty-gconv"
+          # The whole payload: a constructor that creates an empty file named after the process ID.
+          cat > "${lab}/marker.c" <<'C'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <unistd.h>
+          __attribute__((constructor)) static void mark(void) {
+            const char *dir = getenv("F07_MARKER_DIR");
+            char path[512];
+            if (!dir) return;
+            snprintf(path, sizeof path, "%s/ld-marker-%d", dir, (int)getpid());
+            FILE *f = fopen(path, "w");
+            if (f) fclose(f);
+          }
+          C
+          gcc -shared -fPIC -o "${lab}/marker.so" "${lab}/marker.c"
+          mkdir scan-victim
+          cp -R fixtures/gha-permissions/workflow-write-all/.github scan-victim/.github
+
+      - name: Direct probe, LD_PRELOAD with the isolated interpreter
+        run: |
+          set -euo pipefail
+          lab="${RUNNER_TEMP}/f07-loader"
+          F07_MARKER_DIR="${lab}/markers-direct" LD_PRELOAD="${lab}/marker.so" /usr/bin/python3 -I -c pass
+          find "${lab}/markers-direct" -name 'ld-marker-*' -printf '%f\n' | tee "${lab}/direct.txt"
+          [ -s "${lab}/direct.txt" ] || { echo "::error title=F-07 trial::LD_PRELOAD did not load the marker library under python3 -I"; exit 1; }
+
+      - name: The Action with LD_PRELOAD (the Action must refuse, after the marker library has loaded)
+        id: preload
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          LD_PRELOAD: ${{ runner.temp }}/f07-loader/marker.so
+          F07_MARKER_DIR: ${{ runner.temp }}/f07-loader/markers-action
+        with:
+          scan-directory: scan-victim
+
+      - name: The Action with GCONV_PATH (the Action must refuse)
+        id: gconv
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          GCONV_PATH: ${{ runner.temp }}/f07-loader/empty-gconv
+        with:
+          scan-directory: scan-victim
+
+      - name: The Action with LD_LIBRARY_PATH pointing at an empty directory (the Action must refuse)
+        id: ldpath
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/f07-loader/empty-gconv
+        with:
+          scan-directory: scan-victim
+
+      - name: Record what happened
+        if: always()
+        env:
+          PRELOAD_OUTCOME: ${{ steps.preload.outcome }}
+          PRELOAD_STATUS: ${{ steps.preload.outputs.status }}
+          PRELOAD_SOURCE: ${{ steps.preload.outputs.scanner-source }}
+          PRELOAD_REVISION_CHECK: ${{ steps.preload.outputs.revision-check }}
+          GCONV_OUTCOME: ${{ steps.gconv.outcome }}
+          GCONV_STATUS: ${{ steps.gconv.outputs.status }}
+          LDPATH_OUTCOME: ${{ steps.ldpath.outcome }}
+          LDPATH_STATUS: ${{ steps.ldpath.outputs.status }}
+        run: |
+          set -uo pipefail
+          lab="${RUNNER_TEMP}/f07-loader"
+          count="$(find "${lab}/markers-action" -name 'ld-marker-*' | wc -l)"
+          {
+            echo '### F-07: loader settings and the Action'
+            echo
+            echo '| Observation | Value |'
+            echo '|---|---|'
+            echo "| LD_PRELOAD with python3 -I run directly: marker files | $(wc -l < "${lab}/direct.txt") |"
+            echo "| Action with LD_PRELOAD: step outcome / status / scanner source / revision check | ${PRELOAD_OUTCOME} / ${PRELOAD_STATUS} / ${PRELOAD_SOURCE} / ${PRELOAD_REVISION_CHECK} |"
+            echo "| Action with LD_PRELOAD: marker files created by the Action's own interpreters before it refused | ${count} |"
+            echo "| Action with GCONV_PATH: step outcome / status | ${GCONV_OUTCOME} / ${GCONV_STATUS} |"
+            echo "| Action with LD_LIBRARY_PATH: step outcome / status | ${LDPATH_OUTCOME} / ${LDPATH_STATUS} |"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+          fail() { echo "::error title=F-07 trial::$1"; exit 1; }
+          [ "${PRELOAD_OUTCOME}" = failure ] || fail "the Action did not fail with LD_PRELOAD set"
+          [ "${PRELOAD_STATUS}" = error ] || fail "the Action did not report error with LD_PRELOAD set"
+          [ "${PRELOAD_SOURCE}" = unknown ] || fail "the Action did not stop in preparation with LD_PRELOAD set"
+          [ "${PRELOAD_REVISION_CHECK}" = not-checked ] || fail "a scan result was compared with LD_PRELOAD set"
+          # The limitation: code in the loaded library ran in the Action's interpreters first (at least the
+          # preparation and report steps), so the refusal is detection, not prevention.
+          [ "${count}" -ge 2 ] || fail "the marker library did not load in the Action's own interpreters (F-07 behaviour changed)"
+          [ "${GCONV_OUTCOME}" = failure ] && [ "${GCONV_STATUS}" = error ] || fail "the Action did not refuse GCONV_PATH"
+          [ "${LDPATH_OUTCOME}" = failure ] && [ "${LDPATH_STATUS}" = error ] || fail "the Action did not refuse LD_LIBRARY_PATH"
+          echo "F-07 loader behaviour reproduced"
+
+  # 3. glibc tunables: what the loader accepts, and what the Action does with them.
+  tunables:
+    name: GLIBC_TUNABLES
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Copy a fixture with one real finding and list the runner's tunables
+        run: |
+          set -euo pipefail
+          mkdir scan-victim
+          cp -R fixtures/gha-permissions/workflow-write-all/.github scan-victim/.github
+          loader=/lib64/ld-linux-x86-64.so.2
+          ldd --version | head -1 | tee "${RUNNER_TEMP}/glibc-version.txt"
+          "${loader}" --list-tunables | sed 's/:.*//' | sort > "${RUNNER_TEMP}/tunable-names.txt"
+          wc -l < "${RUNNER_TEMP}/tunable-names.txt"
+          # The loader reads the variable (it reports the values it parsed).
+          GLIBC_TUNABLES=glibc.malloc.perturb=165:glibc.malloc.arena_max=3 "${loader}" --list-tunables | grep -E 'perturb|arena_max' | tee "${RUNNER_TEMP}/tunables-parsed.txt"
+          {
+            echo '### F-07: glibc tunables on this runner'
+            echo
+            echo "glibc: $(cat "${RUNNER_TEMP}/glibc-version.txt")"
+            echo
+            echo "Tunable names ($(wc -l < "${RUNNER_TEMP}/tunable-names.txt")):"
+            echo
+            echo '```'
+            sed 's/^glibc\.//' "${RUNNER_TEMP}/tunable-names.txt" | tr '\n' ' '
+            echo
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          # No tunable name refers to a file, directory, library, audit module or preload.
+          if sed 's/^glibc\.//' "${RUNNER_TEMP}/tunable-names.txt" | grep -Eiq 'path|preload|audit|library|libs|module|file|dir'; then
+            echo "::error title=F-07 trial::a tunable name refers to a path, library or module; review it (F-07 behaviour changed)"; exit 1
+          fi
+
+      - name: Control, no tunables
+        id: control
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        with:
+          scan-directory: scan-victim
+
+      - name: Allocator settings
+        id: malloc
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          GLIBC_TUNABLES: glibc.malloc.perturb=165:glibc.malloc.arena_max=2:glibc.malloc.tcache_count=0:glibc.malloc.mxfast=0:glibc.malloc.top_pad=65536
+        with:
+          scan-directory: scan-victim
+
+      - name: Heap checking and tagging settings
+        id: check
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          GLIBC_TUNABLES: glibc.malloc.check=3:glibc.mem.tagging=1:glibc.mem.decorate_maps=1
+        with:
+          scan-directory: scan-victim
+
+      - name: Loader settings
+        id: rtld
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          GLIBC_TUNABLES: glibc.rtld.nns=1:glibc.rtld.optional_static_tls=0:glibc.rtld.dynamic_sort=1
+        with:
+          scan-directory: scan-victim
+
+      - name: CPU feature and threading settings
+        id: cpu
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX2,-AVX512F:glibc.cpu.x86_ibt=off:glibc.pthread.rseq=0:glibc.elision.enable=0
+        with:
+          scan-directory: scan-victim
+
+      - name: Malformed value
+        id: bogus
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          GLIBC_TUNABLES: glibc.bogus=1:::glibc.malloc.arena_max=zzz
+        with:
+          scan-directory: scan-victim
+
+      - name: Record what happened
+        if: always()
+        env:
+          CONTROL_STATUS: ${{ steps.control.outputs.status }}
+          CONTROL_COUNT: ${{ steps.control.outputs.findings-count }}
+          CONTROL_VERSION: ${{ steps.control.outputs.scanner-version }}
+          MALLOC_OUTCOME: ${{ steps.malloc.outcome }}
+          MALLOC_STATUS: ${{ steps.malloc.outputs.status }}
+          MALLOC_COUNT: ${{ steps.malloc.outputs.findings-count }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          CHECK_STATUS: ${{ steps.check.outputs.status }}
+          CHECK_COUNT: ${{ steps.check.outputs.findings-count }}
+          RTLD_OUTCOME: ${{ steps.rtld.outcome }}
+          RTLD_STATUS: ${{ steps.rtld.outputs.status }}
+          RTLD_COUNT: ${{ steps.rtld.outputs.findings-count }}
+          CPU_OUTCOME: ${{ steps.cpu.outcome }}
+          CPU_STATUS: ${{ steps.cpu.outputs.status }}
+          CPU_COUNT: ${{ steps.cpu.outputs.findings-count }}
+          BOGUS_OUTCOME: ${{ steps.bogus.outcome }}
+          BOGUS_STATUS: ${{ steps.bogus.outputs.status }}
+          BOGUS_COUNT: ${{ steps.bogus.outputs.findings-count }}
+        run: |
+          set -uo pipefail
+          {
+            echo '### F-07: the Action with GLIBC_TUNABLES set (fixture has exactly 1 real finding)'
+            echo
+            echo '| Setting | Step outcome | Status | Findings |'
+            echo '|---|---|---|---|'
+            echo "| none (control) | success | ${CONTROL_STATUS} | ${CONTROL_COUNT} |"
+            echo "| allocator | ${MALLOC_OUTCOME} | ${MALLOC_STATUS} | ${MALLOC_COUNT} |"
+            echo "| heap checking and tagging | ${CHECK_OUTCOME} | ${CHECK_STATUS} | ${CHECK_COUNT} |"
+            echo "| loader | ${RTLD_OUTCOME} | ${RTLD_STATUS} | ${RTLD_COUNT} |"
+            echo "| CPU and threading | ${CPU_OUTCOME} | ${CPU_STATUS} | ${CPU_COUNT} |"
+            echo "| malformed | ${BOGUS_OUTCOME} | ${BOGUS_STATUS} | ${BOGUS_COUNT} |"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+          fail() { echo "::error title=F-07 trial::$1"; exit 1; }
+          [ "${CONTROL_STATUS}" = findings ] && [ "${CONTROL_COUNT}" = 1 ] || fail "the control did not report the one real finding"
+          [ "${CONTROL_VERSION}" != "" ] || fail "no scanner version in the control"
+          # The invariant: a tunable never turns the finding into a clean result. Either the
+          # real result comes through unchanged, or the step fails with status error.
+          expect() { # name outcome status count
+            case "$2/$3/$4" in
+              success/findings/1|failure/error/0) ;;
+              *) fail "$1: unexpected result $2/$3/$4";;
+            esac
+          }
+          expect allocator "${MALLOC_OUTCOME}" "${MALLOC_STATUS}" "${MALLOC_COUNT}"
+          expect heap-checking "${CHECK_OUTCOME}" "${CHECK_STATUS}" "${CHECK_COUNT}"
+          expect loader "${RTLD_OUTCOME}" "${RTLD_STATUS}" "${RTLD_COUNT}"
+          expect cpu "${CPU_OUTCOME}" "${CPU_STATUS}" "${CPU_COUNT}"
+          expect malformed "${BOGUS_OUTCOME}" "${BOGUS_STATUS}" "${BOGUS_COUNT}"
+          echo "F-07 tunable behaviour reproduced"
+
+  # 4. Other inherited settings that are neither PYTHON* nor LD_*.
+  other-settings:
+    name: Other inherited settings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Copy a fixture with one real finding
+        run: |
+          set -euo pipefail
+          mkdir scan-victim "${RUNNER_TEMP}/f07-empty"
+          cp -R fixtures/gha-permissions/workflow-write-all/.github scan-victim/.github
+
+      - name: The Action with locale, malloc, time zone, resolver, TLS and temp settings changed
+        id: other
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@e099dcda2ff957b8dbe8c2dc70080880bab1cde2
+        env:
+          LANG: zz_ZZ.bogus
+          LC_ALL: zz_ZZ.bogus
+          LANGUAGE: zz
+          LOCPATH: ${{ runner.temp }}/f07-empty
+          NLSPATH: ${{ runner.temp }}/f07-empty/%N
+          TZ: Bogus/Zone
+          TZDIR: ${{ runner.temp }}/f07-empty
+          MALLOC_ARENA_MAX: '1'
+          MALLOC_PERTURB_: '85'
+          MALLOC_CHECK_: '3'
+          MALLOC_TOP_PAD_: '65536'
+          TMPDIR: /nonexistent-f07
+          HOME: /nonexistent-f07
+          HOSTALIASES: ${{ runner.temp }}/f07-empty/hosts
+          RES_OPTIONS: debug
+          SSL_CERT_FILE: /nonexistent-f07
+          SSL_CERT_DIR: /nonexistent-f07
+          OPENSSL_CONF: /nonexistent-f07
+          OPENSSL_MODULES: /nonexistent-f07
+          XDG_CACHE_HOME: /nonexistent-f07
+          PYTHONPATH: ${{ runner.temp }}/f07-empty
+          PYTHONHOME: /nonexistent-f07
+        with:
+          scan-directory: scan-victim
+
+      - name: Record what happened
+        if: always()
+        env:
+          OUTCOME: ${{ steps.other.outcome }}
+          STATUS: ${{ steps.other.outputs.status }}
+          COUNT: ${{ steps.other.outputs.findings-count }}
+          REVISION_CHECK: ${{ steps.other.outputs.revision-check }}
+          IGNORED: ${{ steps.other.outputs.ignored-environment-count }}
+        run: |
+          set -uo pipefail
+          {
+            echo '### F-07: the Action with other inherited settings changed'
+            echo
+            echo '| Step outcome | Status | Findings | Revision check | Settings reported as ignored |'
+            echo '|---|---|---|---|---|'
+            echo "| ${OUTCOME} | ${STATUS} | ${COUNT} | ${REVISION_CHECK} | ${IGNORED} |"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+          fail() { echo "::error title=F-07 trial::$1"; exit 1; }
+          [ "${OUTCOME}" = success ] || fail "the Action did not complete"
+          [ "${STATUS}" = findings ] && [ "${COUNT}" = 1 ] || fail "the real finding was not reported"
+          [ "${REVISION_CHECK}" = matches-merge ] || fail "the revision check changed"
+          echo "F-07 other-settings behaviour reproduced"
