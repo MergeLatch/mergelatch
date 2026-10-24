@@ -9,8 +9,12 @@
 #     request trial (.github/workflows/action-trial.yml).
 #   - Rendered full SHA verified: yes. Its job summary, read on GitHub, shows
 #     the complete commit SHA of the Action.
-#   - External consumer tested: no. It has been tried in this repository only,
-#     not in a separate repository and not from a fork pull request.
+#   - External consumer tested: yes, in the separate repository
+#     MergeLatch/mergelatch-consumer-trial, including a pull request from a
+#     first-time external fork contributor (README change only; the run waited
+#     for maintainer approval). See docs/EXTERNAL_TRIAL.md for what that does
+#     and does not show.
+#   - Independent human review: pending.
 #   - Published release: none. MergeLatch has not published a release, and a
 #     commit that can be referenced by SHA is not thereby an official release.
 #

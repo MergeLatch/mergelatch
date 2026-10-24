@@ -15,7 +15,7 @@ The aim is simple: help people understand what changed, what might be dangerous,
 | `mergelatch scan` CLI with human-readable and JSON output | Implemented |
 | Rules ML-GHA-001 to ML-GHA-004 for GitHub Actions workflows (see [Detection coverage](#detection-coverage)) | Implemented |
 | Local scanning with no network access, hosted service, or AI model | Implemented |
-| Advisory GitHub Action for pull requests (Linux runners, job summary; trial-tested by SHA in this repository, not a release, see [docs/ACTION.md](docs/ACTION.md)) | Implemented and merged, not released |
+| Advisory GitHub Action for pull requests (Linux runners, job summary; trial-tested by SHA in this repository, in a separate consumer repository, and on a fork pull request; no independent review; not a release, see [docs/ACTION.md](docs/ACTION.md)) | Implemented and merged, not released |
 | Sentinel desktop app, Agent Guard, dependency and malware checks, merge enforcement | Not implemented |
 
 ### Build and run
@@ -112,7 +112,7 @@ The repository contains a composite GitHub Action (`action.yml`) that runs the s
 - Steps do not run under bash, and the scanner is built in an environment assembled from fixed values, so `BASH_ENV`, `CARGO_HOME`, linker and compiler overrides, and rustup settings inherited from the workflow are ignored.
 - The scanner is built from the Action's own, separately checked-out source with a locked build. The pull request content is only passed to it as a directory to read.
 - Results: `clean`, `findings`, `incomplete`, and `error`. Findings and incomplete scans leave the step green but say so prominently in the summary. A scanner failure or an untrustworthy report fails the step.
-- The example in [docs/examples/pull-request-scan.yml](docs/examples/pull-request-scan.yml) pins the verified merge commit `afc7e65d6723029c22935f82c7fc9562d5831565`. That commit has been run as a SHA-pinned Action on GitHub in this repository, and its rendered summary shows the full SHA. It has not been tested in a separate consumer repository or from a fork pull request (the procedure is in [docs/EXTERNAL_TRIAL.md](docs/EXTERNAL_TRIAL.md)). It is not a published release, and a commit that can be referenced by SHA is not thereby an official release.
+- The example in [docs/examples/pull-request-scan.yml](docs/examples/pull-request-scan.yml) pins the verified merge commit `afc7e65d6723029c22935f82c7fc9562d5831565`. That commit has been run as a SHA-pinned Action on GitHub in this repository (its rendered summary shows the full SHA), in a separate consumer repository, and on a pull request from a first-time external fork contributor, whose run waited for maintainer approval. The fork's change was a README edit only. [docs/EXTERNAL_TRIAL.md](docs/EXTERNAL_TRIAL.md) records what those runs do and do not show. The commit has had no independent human review, it is not a published release, and a commit that can be referenced by SHA is not thereby an official release.
 
 Architecture, inputs and outputs, what revision is scanned, why a pull request can bypass the check, the tests, and the release process are in [docs/ACTION.md](docs/ACTION.md).
 
