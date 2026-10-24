@@ -503,3 +503,111 @@ fn the_same_commands_before_any_pull_request_checkout_are_not_analyzed() {
     );
     assert_eq!(report.status, ScanStatus::Clean);
 }
+
+// ---- Workspace state across several checkouts in one job ----------------------
+
+fn job(steps: &str) -> Report {
+    scan_text(&format!(
+        "on: pull_request_target\njobs:\n  a:\n    steps:\n{steps}"
+    ))
+}
+
+fn head_checkout(extra: &str) -> String {
+    format!(
+        "      - uses: actions/checkout@{SHA}\n        with:\n          ref: ${{{{ github.event.pull_request.head.sha }}}}\n{extra}"
+    )
+}
+
+fn base_checkout(extra: &str) -> String {
+    format!("      - uses: actions/checkout@{SHA}\n{extra}")
+}
+
+#[test]
+fn a_later_trusted_checkout_does_not_clear_an_earlier_untrusted_one() {
+    // The base checkout may or may not remove the earlier files, depending on
+    // the `path` and `clean` inputs. The rule does not assume it does.
+    let report = job(&format!(
+        "{}{}      - run: npm test\n",
+        head_checkout(""),
+        base_checkout("")
+    ));
+    assert_eq!(rule(&report).len(), 1, "{:#?}", report);
+}
+
+#[test]
+fn a_trusted_checkout_followed_by_an_untrusted_one_is_flagged() {
+    let report = job(&format!(
+        "{}{}      - run: make\n",
+        base_checkout(""),
+        head_checkout("")
+    ));
+    let found = rule(&report);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].location, "jobs.a.steps[1].with.ref");
+}
+
+#[test]
+fn execution_before_the_untrusted_checkout_is_not_attributed_to_it() {
+    let report = job(&format!(
+        "{}      - run: npm ci\n{}      - run: ls\n",
+        base_checkout(""),
+        head_checkout("")
+    ));
+    assert!(rule(&report).is_empty());
+    assert_eq!(report.status, ScanStatus::Clean);
+}
+
+#[test]
+fn a_checkout_into_another_directory_is_still_treated_as_present_in_the_workspace() {
+    // `path: pr` puts the head code in a subdirectory, and the later command
+    // may well run only in the trusted checkout. The rule cannot tell which
+    // directory a command works in, so it reports. This is a known false positive.
+    let report = job(&format!(
+        "{}{}      - run: npm test\n",
+        base_checkout(""),
+        head_checkout("          path: pr\n")
+    ));
+    assert_eq!(rule(&report).len(), 1);
+}
+
+#[test]
+fn working_directory_does_not_clear_the_finding() {
+    let report = job(&format!(
+        "{}      - run: npm test\n        working-directory: trusted\n",
+        head_checkout("          path: pr\n")
+    ));
+    assert_eq!(rule(&report).len(), 1);
+}
+
+#[test]
+fn several_untrusted_checkouts_give_one_finding_for_the_first() {
+    let report = job(&format!(
+        "{}{}      - run: npm ci\n      - run: npm test\n",
+        head_checkout("          path: one\n"),
+        head_checkout("          path: two\n"),
+    ));
+    let found = rule(&report);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].location, "jobs.a.steps[0].with.ref");
+    assert!(found[0].message.contains("1 more step"));
+}
+
+#[test]
+fn an_unresolved_checkout_alongside_an_untrusted_one_reports_both() {
+    let report = job(&format!(
+        "{}      - uses: actions/checkout@{SHA}\n        with:\n          repository: owner/other\n          path: other\n      - run: make\n",
+        head_checkout("")
+    ));
+    assert_eq!(rule(&report).len(), 1);
+    assert_eq!(report.status, ScanStatus::Incomplete);
+}
+
+#[test]
+fn a_trusted_only_job_with_several_checkouts_is_clean() {
+    let report = job(&format!(
+        "{}{}      - run: npm test\n",
+        base_checkout(""),
+        base_checkout("        with:\n          path: again\n")
+    ));
+    assert_eq!(report.status, ScanStatus::Clean);
+}
