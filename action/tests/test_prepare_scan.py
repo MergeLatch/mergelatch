@@ -8,6 +8,7 @@ scanner is exercised in test_real_scanner.py and in the GitHub-hosted smoke test
 import json
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -94,13 +95,13 @@ class Prepare(unittest.TestCase):
         self.assertEqual(state["scan_dir"], str(self.ws.workspace / "real"))
 
     def test_a_missing_checkout_is_an_error_not_an_empty_clean_scan(self):
-        (self.ws.workspace / ".git").rmdir()
+        shutil.rmtree(self.ws.workspace / ".git")
         _, out, state = self.prepare()
         self.assertEqual(out["ok"], "false")
         self.assertIn("no checkout", state["error"])
 
     def test_git_file_counts_as_a_checkout(self):
-        (self.ws.workspace / ".git").rmdir()
+        shutil.rmtree(self.ws.workspace / ".git")
         (self.ws.workspace / ".git").write_text("gitdir: elsewhere\n")
         _, out, _ = self.prepare()
         self.assertEqual(out["ok"], "true")
@@ -293,7 +294,7 @@ class Scan(unittest.TestCase):
         self.assertLessEqual((self.state / "report.json").stat().st_size, mla.SCANNER_OUTPUT_LIMIT)
 
     def test_nothing_runs_when_preparation_failed(self):
-        (self.ws.workspace / ".git").rmdir()
+        shutil.rmtree(self.ws.workspace / ".git")
         mla.main(["x", "prepare"], self.ws.env())
         state = pathlib.Path(read_outputs(self.ws.tmp)["state-dir"])
         marker = self.ws.root / "ran"

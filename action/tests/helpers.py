@@ -116,6 +116,8 @@ class Workspace:
         self.workspace = self.root / "work" / "repo"
         self.workspace.mkdir(parents=True)
         (self.workspace / ".git").mkdir()
+        # Like actions/checkout on pull_request: a detached HEAD at the merge commit.
+        (self.workspace / ".git" / "HEAD").write_text(SHA_MERGE + "\n")
         self.action = self.root / "actions" / "mergelatch"
         self.action.mkdir(parents=True)
         for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
@@ -137,6 +139,7 @@ class Workspace:
                          MLA_WORKSPACE=str(self.workspace),
                          MLA_ACTION_PATH=str(self.action),
                          MLA_EVENT_NAME="pull_request",
+                         MLA_SHA=SHA_MERGE, MLA_PR_HEAD_SHA=SHA_HEAD,
                          MLA_RUNNER_OS="Linux", MLA_RUNNER_ARCH="X64",
                          MLA_RUNNER_ENVIRONMENT="github-hosted")
         env.update(extra)

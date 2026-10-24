@@ -134,7 +134,7 @@ These are accepted design limits, documented in [ACTION.md](ACTION.md) and the [
 - **Narrow detection.** Four rules, on `.github/workflows/*.yml|yaml` at the root of the scanned directory only. No malware scanning, no source or diff analysis. A clean result is not proof of safety.
 - **Linux x86-64 GitHub-hosted only.** Windows and macOS are refused. The `cap-std` fallback for kernels without `openat2` is untested.
 - **The toolchain download and locked crates are trusted** and are built on the runner for every job.
-- **Revision check** reads `.git` from the scanned directory: not applicable to subdirectory scans or events other than `pull_request`, checks the commit and not the files, and is not an identity.
+- **Revision check** reads the commit from the scanned directory's `.git`, or from the workspace root's detached `HEAD` for a subdirectory; on a `pull_request` an unreadable commit or missing expected commits is an error (D-2, implemented on a branch, not yet verified as a pinned Action). It checks the commit and not the files, and is not an identity.
 - **Detection, not neutralization,** for loader variables, and unknown settings that affect the already-running Python are not enumerated.
 - **Escaping cannot stop look-alike (confusable) characters** from misleading a reader.
 - **The runner's own files** (`~/.cargo`, `~/.rustup`, system Python and bash) and the files that carry state between steps are trusted; a prior step that runs pull request code can change them.
@@ -205,7 +205,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 | ID | Type | Component | Summary | Severity | Reproduced | Disposition |
 | --- | --- | --- | --- | --- | --- | --- |
 | F-01 | Confirmed behavior; documentation was inconsistent | `prepare`, `PRIVILEGED_EVENTS` (as reviewed) | Event guard was a refusal list of two names, not an allowlist | Informational (docs); Low (hardening) | Yes | Docs corrected. **D-1 implemented (merged as `2a1a514…`) and verified as a pinned Action; not independently reviewed, not released** |
-| F-02 | Design limitation | `check_revision`, scanner revision reader | No revision check for subdirectory scans or non-`pull_request` events; result stays green | Low | Yes | Documented. Decision D-2 |
+| F-02 | Design limitation (as reviewed) | `check_revision`, scanner revision reader | No revision check for subdirectory scans or non-`pull_request` events; result stayed green | Low | Yes | Documented, then **D-2 implemented on branch `fix/action-fail-closed-revision`: unverifiable revisions on `pull_request` are errors. Not independently reviewed, not released, not yet verified as a pinned Action** |
 | F-03 | Confirmed behavior; fail-closed | scanner (no findings cap), `parse_report` | A small workflow can produce a report over the 5 MiB limit; the step fails with `error` | Low | Yes | Regression test added. Accepted; decision D-3 |
 | F-04 | Design limitation | consumer workflow | A pull request can edit or remove the caller's step | High if used as a gate; none as advisory | Documented; fork trial did not try it | Documented and prohibited as a required check |
 | F-05 | Design limitation | job composition | A prior same-job step running pull request code can alter state files, the target directory, `GITHUB_ENV`, `GITHUB_PATH`, or the runner's Rust installation | Medium if misused | Not reproduced this phase | Documented: run before any such step |
@@ -231,7 +231,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 - **Behavior (reproduced with the real scanner):** the revision is read from `.git` in the scanned directory. For `scan-directory: sub` there is none, so `revision-check` is `unavailable`, the status is unchanged, and the step is green. For events other than `pull_request` the result is `not-applicable`.
 - **Threat:** a stale or wrong checkout is not detected in those configurations, so the scan may describe other content than the pull request. The effect is a wrong advisory result, not code execution.
 - **Attacker capability required:** control over what is checked out, which belongs to the workflow author (or to code run earlier in the job).
-- **Disposition:** documented, including that consumers can scan the root or assert `revision-check`. D-2: whether `unavailable` on `pull_request` should fail, or whether the Action should read `.git` from the workspace root.
+- **Disposition:** first documented. Then, as part of the maintainer-led hardening, D-2 was implemented in the helper only (the scanner and `action.yml` are unchanged): on `pull_request`, `unavailable` and missing expected commits are `error`, and for an ordinary subdirectory the workspace root's `.git/HEAD` is used when it is a detached lowercase commit ID no longer than 256 bytes, read through no-follow, directory-relative opens. The fallback is skipped for a nested checkout (any `.git` entry between the scanned directory and the root). Both properties were added after maintainer review of the first version of this change. A branch checkout combined with a subdirectory scan, and a `.git` file, now fail (compatibility is described in [ACTION.md](ACTION.md#what-revision-is-scanned)). `afc7e65…` and `2a1a514…` do not contain this change. Status: **implemented on the branch; not independently reviewed; not released; the corrected helper has not run as a pinned Action**, so the targeted re-verification in [RELEASE_PLAN.md](RELEASE_PLAN.md) applies.
 
 ### F-03. Oversized reports
 
@@ -249,7 +249,7 @@ See the table. F-04 and F-05 are the main reasons the Action must not be used as
 | ID | Question | Recommendation of this review | Cost |
 | --- | --- | --- | --- |
 | D-1 | Accept only `pull_request`? | Yes, before `v0.1.0-rc.1`: it makes the code match the documentation and removes the ambiguity in F-01. **Decided, implemented and verified as a pinned Action; awaiting independent review** | Changes `mergelatch_action.py`; new SHA; targeted re-verification |
-| D-2 | Treat `unavailable` as an error on `pull_request`, or read `.git` from the workspace root? | Decide with the reviewer; the current documented behavior is acceptable for an advisory Action | Changes the helper or the scanner; re-verification |
+| D-2 | Treat `unavailable` as an error on `pull_request`, or read `.git` from the workspace root? | Both: implemented on branch `fix/action-fail-closed-revision` (error, with a root `HEAD` fallback for subdirectories). Awaiting review, merge, and pinned-SHA verification | Changed the helper only; re-verification |
 | D-3 | Cap findings in the scanner? | Optional | Changes the scanner; re-verification |
 | D-4 | Is building from crates.io and rustup on every run acceptable for a first release, or should a checksummed prebuilt binary be released? | Reviewer's judgment; this review accepts it for an advisory trial | Release engineering |
 

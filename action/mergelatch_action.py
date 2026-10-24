@@ -27,6 +27,7 @@ import os
 import pwd
 import re
 import resource
+import stat
 import string
 import subprocess
 import sys
@@ -58,6 +59,9 @@ RULE_ID = re.compile(r"\A[A-Z0-9-]{1,32}\Z")
 # that an untrusted checkout must never share) are rejected, as is any
 # empty, missing, differently capitalized or padded name.
 SUPPORTED_EVENTS = ("pull_request",)
+
+# Longest workspace HEAD file that is read; a detached HEAD is a commit ID and a newline.
+MAX_HEAD_BYTES = 256
 
 BUILD_TIMEOUT_SECONDS = 1500
 OS_RELEASE_PATH = "/etc/os-release"
@@ -290,6 +294,7 @@ def prepare(env: dict) -> int:
         if not workspace_raw or not os.path.isdir(workspace_raw):
             raise ActionError("the workspace directory is missing")
         workspace = os.path.realpath(workspace_raw)
+        state["workspace"] = workspace
 
         event = env.get("MLA_EVENT_NAME", "")
         if event not in SUPPORTED_EVENTS:
@@ -577,9 +582,61 @@ def check_revision(context: dict, observed: str | None) -> str:
     return "mismatch"
 
 
+def read_workspace_head(workspace: str) -> str | None:
+    """The commit that the workspace's own checkout recorded, or None.
+
+    Used when the scanned directory is not the checkout root and so has no
+    revision of its own. Only a detached HEAD holding a commit ID is accepted,
+    which is what actions/checkout writes; a symbolic ref, a `.git` file, or
+    anything unusual is "unavailable". Every step is relative to an opened
+    directory and refuses symbolic links, so a link inside the pull request's
+    files cannot redirect the read.
+    """
+    fds: list = []
+    try:
+        fds.append(os.open(workspace, os.O_RDONLY | os.O_DIRECTORY))
+        fds.append(os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fds[-1]))
+        fds.append(os.open("HEAD", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[-1]))
+        info = os.fstat(fds[-1])
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_HEAD_BYTES:
+            return None
+        # One byte more than allowed, so a longer file is seen as longer and not
+        # silently cut to a prefix that happens to look like a commit ID.
+        data = os.read(fds[-1], MAX_HEAD_BYTES + 1)
+        if len(data) > MAX_HEAD_BYTES:
+            return None
+        text = data.decode("ascii", "replace").strip()
+    except OSError:
+        return None
+    finally:
+        for fd in fds:
+            os.close(fd)
+    return text if HEX_OBJECT_ID.match(text) else None
+
+
+def inside_nested_checkout(workspace: str, scan_dir: str) -> bool:
+    """True when the scanned directory, or a directory between it and the
+    workspace root, has a `.git` entry of its own (a nested repository, a
+    submodule or worktree `.git` file, or a link). Such a directory's revision
+    is its own: when it cannot be read, the parent's must not stand in for it."""
+    current = scan_dir
+    while current != workspace and current.startswith(workspace.rstrip(os.sep) + os.sep):
+        if os.path.lexists(os.path.join(current, ".git")):
+            return True
+        current = os.path.dirname(current)
+    return False
+
+
 def evaluate(raw: bytes | None, exit_code: int | None, context: dict,
-             prepare_error: str | None = None, build_outcome: str | None = None) -> dict:
+             prepare_error: str | None = None, build_outcome: str | None = None,
+             workspace_revision: str | None = None) -> dict:
     """Turns raw scanner output into a trusted result.
+
+    On a pull_request, a result whose revision cannot be verified is an error,
+    never clean: either the checkout recorded no readable commit (neither the
+    scanned directory nor the workspace root), or GitHub supplied no expected
+    commit to compare with. `workspace_revision` is the fallback used when the
+    scanned directory has no revision of its own.
 
     The result always has `status` in clean/findings/incomplete/error. An
     `error` result carries `reason`, written by this file, and `report` is None.
@@ -625,7 +682,7 @@ def evaluate(raw: bytes | None, exit_code: int | None, context: dict,
         result["reason"] = "The scanner exit code does not match its report status."
         return result
 
-    revision = (report["target"].get("revision") or {}).get("commit")
+    revision = (report["target"].get("revision") or {}).get("commit") or workspace_revision
     check = check_revision(context, revision)
     result.update(report=report, observed_revision=revision, revision_check=check)
     if check == "mismatch":
@@ -633,6 +690,14 @@ def evaluate(raw: bytes | None, exit_code: int | None, context: dict,
         result["reason"] = (
             "The checked-out revision is neither the expected merge commit nor the "
             "expected pull request head, so the scan may describe different content."
+        )
+        return result
+    if context["event"] == "pull_request" and check in ("unavailable", "not-applicable"):
+        result["status"] = "error"
+        result["reason"] = (
+            "The checked-out revision could not be verified, so the scan may describe different "
+            "content: the checkout recorded no readable commit." if check == "unavailable" else
+            "GitHub supplied no expected merge or head commit to compare the checkout with."
         )
         return result
     result["status"] = report["status"]
@@ -820,7 +885,12 @@ def report_command(env: dict) -> int:
         pass
 
     build_outcome = env.get("MLA_BUILD_OUTCOME") or None
-    result = evaluate(raw, exit_code, context, prepare_error, build_outcome)
+    workspace = state.get("workspace")
+    scan_dir = state.get("scan_dir")
+    workspace_revision = None
+    if workspace and scan_dir and not prepare_error and not inside_nested_checkout(workspace, scan_dir):
+        workspace_revision = read_workspace_head(workspace)
+    result = evaluate(raw, exit_code, context, prepare_error, build_outcome, workspace_revision)
     report = result["report"]
     source = state.get("scanner_source", "unknown")
     max_findings = int(state.get("max_findings", DEFAULT_MAX_FINDINGS))
