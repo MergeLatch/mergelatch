@@ -178,4 +178,98 @@ mod tests {
         std::os::unix::fs::symlink(real.path().join(".git"), dir.path().join(".git")).unwrap();
         assert_eq!(read_revision(dir.path()), None);
     }
+
+    #[cfg(unix)]
+    mod confinement {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        const OUTSIDE_ID: &str = "ffffffffffffffffffffffffffffffffffffffff";
+
+        fn outside_file(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("outside");
+            fs::write(&path, contents).unwrap();
+            (dir, path)
+        }
+
+        #[test]
+        fn head_symlinked_outside_is_not_read() {
+            let (_keep, outside) = outside_file(&format!("{OUTSIDE_ID}\n"));
+            let dir = checkout("placeholder");
+            fs::remove_file(dir.path().join(".git/HEAD")).unwrap();
+            symlink(&outside, dir.path().join(".git/HEAD")).unwrap();
+            assert_eq!(read_revision(dir.path()), None);
+        }
+
+        #[test]
+        fn ref_file_symlinked_outside_gives_no_commit() {
+            let (_keep, outside) = outside_file(&format!("{OUTSIDE_ID}\n"));
+            let dir = checkout("ref: refs/heads/main\n");
+            symlink(&outside, dir.path().join(".git/refs/heads/main")).unwrap();
+            let rev = read_revision(dir.path()).unwrap();
+            assert_eq!(rev.commit, None, "an outside file supplied a commit");
+        }
+
+        #[test]
+        fn refs_directory_symlinked_outside_gives_no_commit() {
+            let outside = tempfile::tempdir().unwrap();
+            fs::create_dir(outside.path().join("heads")).unwrap();
+            fs::write(outside.path().join("heads/main"), format!("{OUTSIDE_ID}\n")).unwrap();
+            let dir = checkout("ref: refs/heads/main\n");
+            fs::remove_dir_all(dir.path().join(".git/refs")).unwrap();
+            symlink(outside.path(), dir.path().join(".git/refs")).unwrap();
+            assert_eq!(read_revision(dir.path()).unwrap().commit, None);
+        }
+
+        #[test]
+        fn relative_link_leaving_dot_git_is_refused_even_inside_the_root() {
+            let dir = checkout("ref: refs/heads/main\n");
+            fs::write(dir.path().join("elsewhere"), format!("{ID}\n")).unwrap();
+            symlink(
+                "../../../elsewhere",
+                dir.path().join(".git/refs/heads/main"),
+            )
+            .unwrap();
+            assert_eq!(read_revision(dir.path()).unwrap().commit, None);
+        }
+
+        #[test]
+        fn packed_refs_symlinked_outside_gives_no_commit() {
+            let (_keep, outside) = outside_file(&format!("{OUTSIDE_ID} refs/heads/main\n"));
+            let dir = checkout("ref: refs/heads/main\n");
+            symlink(&outside, dir.path().join(".git/packed-refs")).unwrap();
+            assert_eq!(read_revision(dir.path()).unwrap().commit, None);
+        }
+
+        #[test]
+        fn oversized_head_is_ignored() {
+            let dir = checkout(&"a".repeat(2 * 1024 * 1024));
+            assert_eq!(read_revision(dir.path()), None);
+        }
+
+        #[test]
+        fn named_pipe_head_is_not_read_and_does_not_block() {
+            let dir = checkout("placeholder");
+            fs::remove_file(dir.path().join(".git/HEAD")).unwrap();
+            let made = std::process::Command::new("mkfifo")
+                .arg(dir.path().join(".git/HEAD"))
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !made {
+                eprintln!("skipped: mkfifo is unavailable");
+                return;
+            }
+            assert_eq!(read_revision(dir.path()), None);
+        }
+
+        #[test]
+        fn git_file_pointing_elsewhere_gives_no_revision() {
+            // Worktrees and submodules use a `.git` file. It is not followed.
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join(".git"), "gitdir: /somewhere/else\n").unwrap();
+            assert_eq!(read_revision(dir.path()), None);
+        }
+    }
 }

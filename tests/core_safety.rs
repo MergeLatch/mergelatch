@@ -478,3 +478,15 @@ fn json_report_is_valid_and_has_required_fields() {
     }
     assert_eq!(value["status"], "findings");
 }
+
+/// Confinement is only verified on Linux. Elsewhere the scan must refuse to
+/// run instead of falling back to path-based opening. This test cannot run on
+/// the Linux machine used for development; it is compiled only on other platforms.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn unsupported_platform_fails_closed() {
+    let dir = repo();
+    fs::write(workflow(&dir, "ci.yml"), SAFE).unwrap();
+    let result = scan_directory(dir.path(), &ScanLimits::default());
+    assert!(matches!(result, Err(ScanError::UnsupportedPlatform)));
+}
