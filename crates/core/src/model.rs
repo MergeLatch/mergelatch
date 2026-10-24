@@ -61,6 +61,8 @@ pub enum IncompleteKind {
     UnsupportedYaml,
     LimitExceeded,
     Timeout,
+    /// The workflow uses a construct the rules cannot analyze reliably.
+    AnalysisLimit,
 }
 
 /// An inspection that could not be completed.

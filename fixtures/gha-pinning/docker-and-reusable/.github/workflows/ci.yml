@@ -1,0 +1,9 @@
+name: Other forms
+on: pull_request
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker://alpine:3.19
+  call:
+    uses: owner/repo/.github/workflows/reusable.yml@v1

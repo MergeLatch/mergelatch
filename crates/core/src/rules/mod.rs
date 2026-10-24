@@ -2,11 +2,16 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+mod permissions;
+mod pinning;
+mod workflow;
+
+pub use permissions::RULE_WRITE_ALL;
+pub use pinning::RULE_UNPINNED;
+
 use crate::discover::WorkflowFile;
 use crate::yaml::{Node, ParseFailure, parse_document};
 use crate::{Finding, Incomplete, IncompleteKind, ScanLimits, Severity, sanitize_text};
-
-pub const RULE_WRITE_ALL: &str = "ML-GHA-001";
 
 /// Public description of a rule, for listing and documentation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -19,12 +24,7 @@ pub struct RuleInfo {
 
 /// The rules in the built-in ruleset, in identifier order.
 pub fn builtin_rules() -> Vec<RuleInfo> {
-    vec![RuleInfo {
-        id: RULE_WRITE_ALL,
-        severity: Severity::Medium,
-        title: "Workflow grants write-all permissions to GITHUB_TOKEN",
-        description: "Detects an explicit `permissions: write-all` setting at the workflow level or on a job in .github/workflows/*.yml and *.yaml.",
-    }]
+    vec![permissions::INFO, pinning::INFO]
 }
 
 /// Result of analyzing one workflow file.
@@ -80,119 +80,73 @@ pub(crate) fn check_workflow(
         file,
         result: &mut result,
     };
-    ctx.reject_merge_keys(top, "the workflow");
-    for (key, value) in top {
-        match key.as_str() {
-            Some("permissions") => ctx.check_permissions(value, "permissions", None),
-            Some("jobs") => ctx.check_jobs(value),
-            _ => {}
-        }
-    }
+    let wf = workflow::Workflow::build(top, &mut ctx);
+    permissions::check(&mut ctx, &wf);
+    pinning::check(&mut ctx, &wf);
     result
 }
 
-struct Context<'a> {
+/// Shared state for the rules analyzing one file.
+pub(crate) struct Context<'a> {
     file: &'a WorkflowFile,
     result: &'a mut FileResult,
 }
 
 impl Context<'_> {
-    fn unsupported(&mut self, detail: String) {
+    fn gap(&mut self, kind: IncompleteKind, detail: String) {
         self.result.incomplete.push(Incomplete {
             path: Some(self.file.path.clone()),
-            kind: IncompleteKind::UnsupportedYaml,
-            detail,
+            kind,
+            detail: sanitize_text(&detail, 300),
         });
+    }
+
+    /// Valid YAML that the analysis does not expand or handle.
+    pub(crate) fn unsupported(&mut self, detail: String) {
+        self.gap(IncompleteKind::UnsupportedYaml, detail);
+    }
+
+    /// A construct the rules cannot analyze reliably. Makes the scan
+    /// incomplete rather than treating the construct as safe.
+    pub(crate) fn limit(&mut self, detail: String) {
+        self.gap(IncompleteKind::AnalysisLimit, detail);
     }
 
     /// YAML merge keys (`<<`) can inject settings from elsewhere in the file.
     /// They are not expanded, so their presence means the inspection is partial.
-    fn reject_merge_keys(&mut self, entries: &[(Node, Node)], scope: &str) {
+    pub(crate) fn reject_merge_keys(&mut self, entries: &[(Node, Node)], scope: &str) {
         if entries.iter().any(|(k, _)| k.as_str() == Some("<<")) {
             self.unsupported(format!("merge key `<<` in {scope} is not expanded"));
         }
     }
 
-    fn check_jobs(&mut self, jobs: &Node) {
-        match jobs {
-            Node::Map(entries) => {
-                self.reject_merge_keys(entries, "`jobs`");
-                for (id, job) in entries {
-                    let Some(id) = id.as_str() else { continue };
-                    let id = sanitize_text(id, 100);
-                    match job {
-                        Node::Map(fields) => {
-                            self.reject_merge_keys(fields, &format!("job `{id}`"));
-                            for (key, value) in fields {
-                                if key.as_str() == Some("permissions") {
-                                    let location = format!("jobs.{id}.permissions");
-                                    self.check_permissions(value, &location, Some(&id));
-                                }
-                            }
-                        }
-                        Node::CollectionAlias => {
-                            self.unsupported(format!("job `{id}` is an alias that is not expanded"))
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Node::CollectionAlias => {
-                self.unsupported("`jobs` is an alias that is not expanded".into())
-            }
-            _ => {}
-        }
-    }
-
-    fn check_permissions(&mut self, value: &Node, location: &str, job: Option<&str>) {
-        match value {
-            Node::Scalar { line, alias_of, .. } if value.as_str() == Some("write-all") => {
-                self.result.findings.push(write_all_finding(
-                    self.file, *line, *alias_of, location, job,
-                ));
-            }
-            Node::CollectionAlias => {
-                self.unsupported(format!("`{location}` is an alias that is not expanded"))
-            }
-            _ => {}
-        }
+    pub(crate) fn finding(
+        &mut self,
+        info: &RuleInfo,
+        line: usize,
+        location: &str,
+        message: String,
+        evidence: String,
+        remediation: &str,
+    ) {
+        self.result.findings.push(Finding {
+            rule_id: info.id.to_string(),
+            severity: info.severity,
+            title: info.title.to_string(),
+            file: self.file.path.clone(),
+            line: Some(line),
+            location: location.to_string(),
+            message,
+            evidence,
+            remediation: remediation.to_string(),
+        });
     }
 }
 
-fn write_all_finding(
-    file: &WorkflowFile,
-    line: usize,
-    alias_of: Option<usize>,
-    location: &str,
-    job: Option<&str>,
-) -> Finding {
-    let scope = match job {
-        Some(id) => format!("Job `{id}`"),
-        None => "The workflow".to_string(),
-    };
-    // Built from the matched setting only. The source line is not copied, so
-    // comments, other keys, and values on the same line are never disclosed.
-    let key = location.rsplit('.').next().unwrap_or(location);
-    let evidence = match alias_of {
-        Some(defined) => format!("{key}: write-all (alias; value defined on line {defined})"),
-        None => format!("{key}: write-all"),
-    };
-    Finding {
-        rule_id: RULE_WRITE_ALL.to_string(),
-        severity: Severity::Medium,
-        title: "Workflow grants write-all permissions to GITHUB_TOKEN".to_string(),
-        file: file.path.clone(),
-        line: Some(line),
-        location: location.to_string(),
-        message: format!(
-            "{scope} sets `permissions: write-all`, which gives the GITHUB_TOKEN write access \
-             to every permission scope. Any step that runs compromised or untrusted code can \
-             use that access."
-        ),
-        evidence,
-        remediation: "Remove `write-all`. Set workflow-level permissions to the minimum needed, \
-                      for example `contents: read`, and grant individual write scopes only to \
-                      the jobs that need them."
-            .to_string(),
+/// Notes in evidence that a value came from a YAML alias.
+pub(crate) fn with_alias(evidence: String, alias_of: Option<usize>) -> String {
+    match alias_of {
+        Some(defined) => format!("{evidence} (alias; value defined on line {defined})"),
+        None => evidence,
     }
 }

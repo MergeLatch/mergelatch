@@ -27,6 +27,22 @@ pub(crate) enum Node {
 }
 
 impl Node {
+    /// Source line of a scalar (where an alias is used, for aliased scalars).
+    pub(crate) fn line(&self) -> Option<usize> {
+        match self {
+            Node::Scalar { line, .. } => Some(*line),
+            _ => None,
+        }
+    }
+
+    /// For a scalar that came from an alias, the line of the anchored value.
+    pub(crate) fn alias_of(&self) -> Option<usize> {
+        match self {
+            Node::Scalar { alias_of, .. } => *alias_of,
+            _ => None,
+        }
+    }
+
     /// The text of a non-block scalar.
     pub(crate) fn as_str(&self) -> Option<&str> {
         match self {

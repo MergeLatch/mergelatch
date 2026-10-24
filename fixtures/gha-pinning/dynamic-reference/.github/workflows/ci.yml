@@ -1,0 +1,7 @@
+name: Dynamic
+on: pull_request
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: owner/repo@${{ matrix.ref }}
