@@ -246,6 +246,13 @@ jobs:
             echo "### SHA-pinned Action trial"
             echo
             echo "The Action was loaded by full commit SHA \`${ACTION_SHA}\` from a separate download directory, not from this checkout. Advisory trial only. Clean results do not prove safety, and this workflow can be edited by the pull request it runs on."
+            echo
+            echo "Rendering check. GitHub shortens a full SHA written as owner/repo@sha in ordinary text, but not inside a code span."
+            echo
+            echo "| Form | Rendered |"
+            echo "|---|---|"
+            echo "| ordinary text | MergeLatch/mergelatch@${ACTION_SHA} |"
+            echo "| code span | \`MergeLatch/mergelatch@${ACTION_SHA}\` |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   no-checkout:
