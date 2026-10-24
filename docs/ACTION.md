@@ -134,6 +134,8 @@ The case of a separately checked-out Action directory (`scanner-source: action-c
 
 ## Verification status
 
+### Historical verification: `afc7e65d6723029c22935f82c7fc9562d5831565`
+
 | Item | Status |
 | --- | --- |
 | Source reviewed | `afc7e65d6723029c22935f82c7fc9562d5831565`, the merge commit of pull request #9 |
@@ -166,7 +168,7 @@ The example workflow, `TRIAL_TESTED_SHA`, and the "tested" wording elsewhere sti
 
 The Action implementation is `action.yml`, `action/mergelatch_action.py`, `action/build.sh`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, and `crates/`. A consumer who pins a commit receives the whole repository at that commit, but only these paths are built or run.
 
-Only `afc7e65d6723029c22935f82c7fc9562d5831565` itself has been run as a pinned Action. A later commit has a different SHA and has **not** been run as an immutable Action unless a run for that exact SHA is recorded here. As of the review-readiness work (main at `4af8f9aa9340fee38abb7c9f3b554c53ad645d64`), every path above had the same git object ID as at `afc7e65…` (checked with `git rev-parse <commit>:<path>`), so the implementation was byte-identical. The event-allowlist change (decision D-1) then changed `action/mergelatch_action.py`, so commits from that change onward are **not** the implementation that `afc7e65…` verified. That is a statement about identical files, not a new test. The check to repeat for any later commit is:
+Two commits have been run as SHA-pinned Actions on GitHub: `afc7e65d6723029c22935f82c7fc9562d5831565` (historical helper behavior) and `2a1a514b94754b146a690cf98ef59bc649d423ff` (corrected D-1 event allowlist). The separate run links and results are documented above. A different commit SHA is not considered tested merely because its implementation files match; GitHub must actually load that exact reference in a recorded trial. As of the review-readiness work (main at `4af8f9aa9340fee38abb7c9f3b554c53ad645d64`), every path above had the same git object ID as at `afc7e65…` (checked with `git rev-parse <commit>:<path>`), so the implementation was byte-identical. The event-allowlist change (decision D-1) then changed `action/mergelatch_action.py`, so commits from that change onward are **not** the implementation that `afc7e65…` verified. That is a statement about identical files, not a new test. The check to repeat for any later commit is:
 
 ```
 git diff --quiet afc7e65d6723029c22935f82c7fc9562d5831565 <commit> -- \
@@ -175,9 +177,9 @@ git diff --quiet afc7e65d6723029c22935f82c7fc9562d5831565 <commit> -- \
 
 Re-verification of the Action as a pinned reference is needed if that diff is not empty or a defect is found in the implementation. For a first release, the plan in [RELEASE_PLAN.md](RELEASE_PLAN.md) runs the consumer trial against the exact release commit before it is tagged.
 
-## Trial results
+## Historical trial results: `afc7e65d6723029c22935f82c7fc9562d5831565`
 
-`.github/workflows/action-trial.yml` runs the Action as `MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565` (never `uses: ./`) on a GitHub-hosted `ubuntu-24.04` runner, in this repository, on pull request #10. Run 40096959695 succeeded. The expected hashes in the workflow were computed from the files at that commit with `git show`; `action.yml`, `build.sh`, `Cargo.lock`, and `rust-toolchain.toml` are byte-identical to the previous pin and only the helper differs.
+Earlier, `.github/workflows/action-trial.yml` ran the Action as `MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565` (never `uses: ./`) on a GitHub-hosted `ubuntu-24.04` runner, in this repository, on pull request #10. Run [40096959695](https://github.com/MergeLatch/mergelatch/actions/runs/40096959695) succeeded. The expected hashes in the workflow were computed from the files at that commit with `git show`; `action.yml`, `build.sh`, `Cargo.lock`, and `rust-toolchain.toml` are byte-identical to the previous pin and only the helper differs. **This subsection records the historical run, not the workflow's current pin.** The current trial workflow pins `2a1a514b94754b146a690cf98ef59bc649d423ff`; its evidence is recorded under [Corrected implementation](#corrected-implementation-2a1a514b94754b146a690cf98ef59bc649d423ff).
 
 What was observed on GitHub (real execution, not mocks). Summary text was read from the rendered job summaries; outputs were asserted by the workflow:
 
@@ -199,7 +201,7 @@ Measured on that run (one fresh cold runner): total run 34 s, trial job 30 s, no
 Not verified, and not measured:
 
 - **A contributor who edits the calling workflow,** in a fork or otherwise. The external fork pull request changed a README line only ([EXTERNAL_TRIAL.md](EXTERNAL_TRIAL.md)).
-- **Event restrictions on GitHub.** The refusal of `pull_request_target` and `workflow_run` is covered by unit tests only; no GitHub run used those events.
+- **Event restrictions in the historical run.** The old refusal of `pull_request_target` and `workflow_run` was covered by unit tests; that particular run did not exercise those events. The later D-1 implementation was exercised under real `workflow_dispatch` in [run 40108606160](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40108606160), but no GitHub run has specifically exercised `pull_request_target` or `workflow_run`.
 - **GitHub being unable to download the Action.** Not simulated. The job would fail at setup before any step runs.
 - **A cold build failure on GitHub** (for example an unreachable Rust distribution server). Covered only by mocked tests, which report status `error` and fail the step.
 - Network dependencies, from the logs: GitHub (the Action download), the Rust distribution server (the pinned toolchain), and the crates registry (the locked crates).
@@ -229,10 +231,10 @@ This is a review of the Action as it stands, not a release. No tag, release page
 Open items before a first controlled public release candidate:
 
 1. Independent human review of the Action, helper, workflows, and build ([REVIEW_READINESS.md](REVIEW_READINESS.md)). Pending.
-2. Decisions on the open items in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions), notably whether the Action should accept only `pull_request`.
-3. A consumer-trial run pinned to the exact commit that would be tagged, if it differs from `afc7e65…` ([RELEASE_PLAN.md](RELEASE_PLAN.md)).
+2. Independent review of the D-1 `pull_request`-only allowlist (implemented and trial-tested at `2a1a514b94754b146a690cf98ef59bc649d423ff`) and maintainer dispositions for D-2 through D-4 in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions).
+3. A consumer-trial run pinned to the **exact candidate release commit**, even if its implementation is byte-identical to the tested `2a1a514b94754b146a690cf98ef59bc649d423ff` implementation ([RELEASE_PLAN.md](RELEASE_PLAN.md)).
 
-Done for `afc7e65…`: the in-repository SHA-pinned verification including the rendered full SHA, the separate consumer repository run, and a first-time external fork pull request run (README-only change).
+Verified for the historical `afc7e65…` implementation: the in-repository trial including its rendered full SHA, separate consumer trial, and first-time external fork PR (README-only). Verified separately for `2a1a514b94754b146a690cf98ef59bc649d423ff`: in-repository and separate consumer trials, plus the manually dispatched unsupported-event rejection. A fork run pinned to `2a1a514b94754b146a690cf98ef59bc649d423ff` has not been performed.
 
 ## Known limitations
 
@@ -251,7 +253,7 @@ Done for `afc7e65…`: the in-repository SHA-pinned verification including the r
 ## Release and SHA-pinning process (not yet done)
 
 1. Independent review of this change, including the helper and the workflows.
-2. Merge. Run the smoke test and a controlled advisory trial in a repository that is not otherwise protected by it. (Done for `afc7e65…`: in-repository, separate consumer repository, and a fork pull request.)
+2. Merge. Run the smoke test and a controlled advisory trial in a repository that is not otherwise protected by it. (The historical `afc7e65…` implementation has in-repository, separate consumer, and fork evidence; `2a1a514b94754b146a690cf98ef59bc649d423ff` has in-repository, separate consumer, and `workflow_dispatch` rejection evidence, but no fork run.)
 3. Cut a release from a reviewed commit and record its **full 40-character SHA**. Verify the SHA against the repository before publishing it.
 4. Consumers pin that SHA and nothing else. The example currently names the verified commit `afc7e65…`, not a release. Updates are made by reviewing a newer commit and changing the whole SHA, never by following a branch or tag.
 5. Optionally extract `action.yml`, `action/`, and the scanner source (or checksummed release binaries) into a separate `mergelatch-action` repository after the above. The extraction must keep `Cargo.lock` and `rust-toolchain.toml` with the source it builds, and must repeat the review and the SHA pinning for the new location. That repository does not exist yet.
