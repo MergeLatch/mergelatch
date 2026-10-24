@@ -15,7 +15,8 @@ The aim is simple: help people understand what changed, what might be dangerous,
 | `mergelatch scan` CLI with human-readable and JSON output | Implemented |
 | Rules ML-GHA-001 to ML-GHA-004 for GitHub Actions workflows (see [Detection coverage](#detection-coverage)) | Implemented |
 | Local scanning with no network access, hosted service, or AI model | Implemented |
-| GitHub Action, Sentinel desktop app, Agent Guard, dependency and malware checks, merge enforcement | Not implemented |
+| Advisory GitHub Action for pull requests (Linux runners, job summary, not yet released, see [docs/ACTION.md](docs/ACTION.md)) | Implemented in this repository, not released |
+| Sentinel desktop app, Agent Guard, dependency and malware checks, merge enforcement | Not implemented |
 
 ### Build and run
 
@@ -100,8 +101,19 @@ Each rule's coverage, example finding, remediation, false-positive risks, and un
 - The time limit is detected, not strictly enforced. It is checked between files and during YAML parsing, but a single blocking read is not interrupted. A scan that finishes after the limit is reported as incomplete, never clean.
 - **Confined file access, verified on Linux only.** Files are opened relative to a handle on the scan root using `cap-std`, so a symlink, rename, or directory swap made during the scan cannot redirect a read outside the root. See "Filesystem confinement" below for what this does and does not cover. Platforms other than Linux are refused with an error, because confinement has not been verified there.
 - Revision information is read from `.git` files without running Git, through the same confined access. It is what the scanned directory claims, not a verified identity: anyone who controls the directory controls those files. If it cannot be read safely, it is omitted. Worktrees and other layouts where `.git` is not a directory report no revision.
-- Only the local directory contents are analyzed. Pull request metadata and diffs are not.
+- Only the local directory contents are analyzed. Pull request metadata and diffs are not. The GitHub Action scans whatever the earlier checkout step provides, nothing more.
 - Supported and tested platform: Linux (kernel 7.0 on x86-64 was used for the tests). Windows and macOS return an unsupported-platform error and are untested.
+
+### GitHub Action (advisory, not yet released)
+
+The repository contains a composite GitHub Action (`action.yml`) that runs the scanner on a checked-out pull request and writes a job summary and outputs. It is **advisory**: it is not a merge gate, a green check does not mean a pull request is safe, and it must not be added as a required check. It scans only the workflow files at the root of the scanned directory with rules ML-GHA-001 to ML-GHA-004. It does not scan source code for malware or the Git diff.
+
+- It supports GitHub-hosted `ubuntu-24.04` runners, `pull_request` triggers, `contents: read`, and no secrets. It refuses `pull_request_target` and `workflow_run`.
+- The scanner is built from the Action's own, separately checked-out source with a locked build. The pull request content is only passed to it as a directory to read.
+- Results: `clean`, `findings`, `incomplete`, and `error`. Findings and incomplete scans leave the step green but say so prominently in the summary. A scanner failure or an untrustworthy report fails the step.
+- No reviewed commit exists yet, so the example in [docs/examples/pull-request-scan.yml](docs/examples/pull-request-scan.yml) contains a placeholder and is not runnable. A real SHA will be published only after review and a trial.
+
+Architecture, inputs and outputs, what revision is scanned, why a pull request can bypass the check, the tests, and the release process are in [docs/ACTION.md](docs/ACTION.md).
 
 ### Filesystem confinement
 
