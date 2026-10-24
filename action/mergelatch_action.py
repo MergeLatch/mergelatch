@@ -60,6 +60,9 @@ RULE_ID = re.compile(r"\A[A-Z0-9-]{1,32}\Z")
 # empty, missing, differently capitalized or padded name.
 SUPPORTED_EVENTS = ("pull_request",)
 
+# Longest workspace HEAD file that is read; a detached HEAD is a commit ID and a newline.
+MAX_HEAD_BYTES = 256
+
 BUILD_TIMEOUT_SECONDS = 1500
 OS_RELEASE_PATH = "/etc/os-release"
 
@@ -594,9 +597,15 @@ def read_workspace_head(workspace: str) -> str | None:
         fds.append(os.open(workspace, os.O_RDONLY | os.O_DIRECTORY))
         fds.append(os.open(".git", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fds[-1]))
         fds.append(os.open("HEAD", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[-1]))
-        if not stat.S_ISREG(os.fstat(fds[-1]).st_mode):
+        info = os.fstat(fds[-1])
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_HEAD_BYTES:
             return None
-        text = os.read(fds[-1], 256).decode("ascii", "replace").strip()
+        # One byte more than allowed, so a longer file is seen as longer and not
+        # silently cut to a prefix that happens to look like a commit ID.
+        data = os.read(fds[-1], MAX_HEAD_BYTES + 1)
+        if len(data) > MAX_HEAD_BYTES:
+            return None
+        text = data.decode("ascii", "replace").strip()
     except OSError:
         return None
     finally:

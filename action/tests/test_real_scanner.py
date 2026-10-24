@@ -246,6 +246,23 @@ class RealScanner(unittest.TestCase):
         code, out, _ = self.revision_scan("vendor/lib/src", SHA_MERGE + "\n")
         self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "unavailable"))
 
+    def test_a_head_longer_than_the_limit_is_rejected_even_if_it_starts_with_a_valid_commit(self):
+        (self.ws.workspace / "sub").mkdir()
+        sha = SHA_MERGE
+        oversized = {
+            "padding to byte 256, then more": sha + " " * (256 - len(sha)) + "trailing data\n",
+            "one byte past the limit": sha + " " * (257 - len(sha)),
+            "newline padding past the limit": sha + "\n" * 300,
+        }
+        for label, content in oversized.items():
+            self.assertGreater(len(content), 256, label)
+            code, out, _ = self.revision_scan("sub", content)
+            self.assertEqual((code, out["status"], out["revision-check"], out["scanned-revision"]),
+                             (1, "error", "unavailable", ""), label)
+        # A HEAD within the limit, with the usual trailing newline, is still accepted.
+        code, out, _ = self.revision_scan("sub", sha + "\n")
+        self.assertEqual((code, out["revision-check"]), (0, "matches-merge"))
+
     def test_a_pull_request_without_expected_commits_is_an_error(self):
         code, out, summary = self.revision_scan(".", SHA_MERGE + "\n", MLA_SHA="", MLA_PR_HEAD_SHA="")
         self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "not-applicable"))
