@@ -137,10 +137,11 @@ class RealScanner(unittest.TestCase):
         self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "mismatch"))
         self.assertIn("neither the expected merge commit", summary)
 
-    def test_a_scanned_subdirectory_has_no_revision_and_says_so(self):
+    def test_a_scanned_subdirectory_is_verified_through_the_workspace_checkout(self):
         (self.ws.workspace / "sub").mkdir()
         code, out, _ = self.run_steps("sub", MLA_SHA=SHA_MERGE, MLA_PR_HEAD_SHA=SHA_HEAD)
-        self.assertEqual((code, out["revision-check"]), (0, "unavailable"))
+        self.assertEqual((code, out["status"], out["revision-check"], out["scanned-revision"]),
+                         (0, "clean", "matches-merge", SHA_MERGE))
 
     def test_a_report_larger_than_the_limit_fails_closed(self):
         # The scanner does not cap the number of findings, so one workflow of a

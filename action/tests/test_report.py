@@ -123,15 +123,18 @@ class Evaluate(unittest.TestCase):
             return mla.evaluate(raw(data), 0, context(**ctx))
         self.assertEqual(check(SHA_MERGE)["revision_check"], "matches-merge")
         self.assertEqual(check(SHA_HEAD)["revision_check"], "matches-head")
+        # A pull_request whose revision cannot be read is an error, never clean.
         self.assertEqual(check(None)["revision_check"], "unavailable")
-        self.assertEqual(check(None)["status"], "clean")
+        self.assertEqual(check(None)["status"], "error")
         stale = check(SHA_OTHER)
         self.assertEqual(stale["revision_check"], "mismatch")
         self.assertEqual(stale["status"], "error")
         self.assertIsNone(stale["report"] and None)  # report kept only for display
         self.assertEqual(check(SHA_OTHER, event="push")["revision_check"], "not-applicable")
         self.assertEqual(check(SHA_OTHER, event="push")["status"], "clean")
-        self.assertEqual(check(SHA_OTHER, merge_sha=None, head_sha=None)["revision_check"], "not-applicable")
+        # No expected commit from GitHub on a pull_request: nothing to verify against, so an error.
+        no_expected = check(SHA_OTHER, merge_sha=None, head_sha=None)
+        self.assertEqual((no_expected["revision_check"], no_expected["status"]), ("not-applicable", "error"))
 
     def test_findings_with_a_stale_revision_are_still_an_error(self):
         data = report("findings", [finding()], target={"path": "/x", "revision": {"commit": SHA_OTHER, "reference": None}})
