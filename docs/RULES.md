@@ -123,9 +123,11 @@ The line number is exact inside `|` blocks. For other scalar styles it is the li
 
 The message notes whether the job has explicit write permissions or references secrets.
 
-**Not flagged.** `pull_request_target` by itself. A checkout with no `ref` (the base branch) or a base ref. A pull request checkout followed only by commands that do not run repository code, such as `git diff`, `echo`, or `gh pr comment`. Steps in other jobs, since each job has its own workspace. Execution before the checkout. Other triggers such as `pull_request`.
+**Not flagged.** `pull_request_target` by itself. A checkout with no `repository` and no `ref` (the base repository's default branch), a literal branch or tag `ref` in the base repository, or a `ref` known to select the base (`github.sha`, `github.base_ref`, `github.event.pull_request.base.*`, and similar). A pull request checkout followed only by commands that do not run repository code, such as `git diff`, `echo`, or `gh pr comment`. Steps in other jobs, since each job has its own workspace. Execution before the checkout. Other triggers such as `pull_request`.
 
-**Analysis limits.** In a `pull_request_target` workflow, a checkout `ref` or `repository` whose value is not known to select the base repository (for example `${{ matrix.ref }}` or `${{ inputs.ref }}`), and, after a pull request checkout, a command that is not on the lists of known-safe or known-executing commands, make the scan incomplete.
+**Checkout repository.** `actions/checkout` can fetch any repository, so `with.repository` is judged separately from `with.ref`. It is trusted only when the whole value is one plain expression naming the workflow's own repository (`github.repository`, `github.event.repository.full_name`, or `github.event.pull_request.base.repo.full_name`). A pull request head repository (`github.event.pull_request.head.repo.*`) is untrusted. Anything else, including a literal such as `owner/repo`, an empty value, a mixed value such as `${{ github.repository_owner }}/tools`, or `matrix`, `inputs`, `env`, or `vars` values, cannot be shown to be the base repository and is an analysis limit. Workflows that check out a separate, fixed repository therefore return an incomplete result and need review by hand.
+
+**Analysis limits.** In a `pull_request_target` workflow, a checkout `ref` whose value is not known to select the base repository (for example `${{ matrix.ref }}` or `${{ inputs.ref }}`), a `repository` that cannot be resolved as described above, and, after a pull request checkout, a command that is not on the lists of known-safe or known-executing commands, make the scan incomplete.
 
 **Example.**
 

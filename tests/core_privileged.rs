@@ -280,3 +280,144 @@ fn reports_are_deterministic() {
     let b = scan_fixture("fork-repository");
     assert_eq!(a.to_json(), b.to_json());
 }
+
+// ---- Checkout repository and ref trust ---------------------------------------
+
+/// A pull_request_target workflow with one checkout configured by `with`
+/// lines, followed by a build step.
+fn checkout(with: &str) -> Report {
+    scan_text(&format!(
+        "on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@{SHA}\n        with:\n{with}      - run: npm test\n"
+    ))
+}
+
+fn gap_details(report: &Report) -> String {
+    report
+        .incomplete
+        .iter()
+        .map(|i| i.detail.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn literal_external_repository_is_not_assumed_to_be_the_base_repository() {
+    let report = checkout("          repository: some-owner/some-repo\n");
+    assert!(rule(&report).is_empty());
+    assert_eq!(report.status, ScanStatus::Incomplete);
+    assert_eq!(report.incomplete[0].kind, IncompleteKind::AnalysisLimit);
+    assert!(
+        gap_details(&report).contains("literal repository"),
+        "{}",
+        gap_details(&report)
+    );
+    assert!(gap_details(&report).contains("with.repository"));
+}
+
+#[test]
+fn expressions_naming_the_workflows_own_repository_are_trusted() {
+    for value in [
+        "${{ github.repository }}",
+        "${{ github.event.repository.full_name }}",
+        "${{ github.event.pull_request.base.repo.full_name }}",
+        "${{GITHUB.REPOSITORY}}",
+    ] {
+        let report = checkout(&format!("          repository: {value}\n"));
+        assert_eq!(report.status, ScanStatus::Clean, "{value}: {:#?}", report);
+    }
+}
+
+#[test]
+fn no_repository_input_means_the_base_repository() {
+    let report = checkout("          fetch-depth: 0\n");
+    assert_eq!(report.status, ScanStatus::Clean);
+}
+
+#[test]
+fn pull_request_head_repository_is_flagged_in_every_spelling() {
+    for value in [
+        "${{ github.event.pull_request.head.repo.full_name }}",
+        "${{ github.event.pull_request.head.repo.clone_url }}",
+        "${{ github['event']['pull_request']['head']['repo']['full_name'] }}",
+        "${{ github.event.pull_request.head.repo.full_name }}-suffix",
+    ] {
+        let report = checkout(&format!("          repository: {value}\n"));
+        let found = rule(&report);
+        assert_eq!(found.len(), 1, "{value}");
+        assert!(found[0].location.ends_with(".with.repository"));
+        assert!(found[0].evidence.starts_with("repository: "));
+    }
+}
+
+#[test]
+fn dynamic_or_ambiguous_repository_values_are_analysis_limits() {
+    for value in [
+        "${{ matrix.repo }}",
+        "${{ inputs.repository }}",
+        "${{ env.REPO }}",
+        "${{ vars.UPSTREAM }}",
+        "${{ github.repository_owner }}/tools",
+        "${{ github.repository }}-fork",
+        "${{ github.event[matrix.key] }}",
+        "${{ github.repository || 'owner/repo' }}",
+        "''",
+        "${{ github.repository",
+    ] {
+        let report = checkout(&format!("          repository: {value}\n"));
+        assert_eq!(report.status, ScanStatus::Incomplete, "{value}");
+        assert_eq!(
+            report.incomplete[0].kind,
+            IncompleteKind::AnalysisLimit,
+            "{value}"
+        );
+        assert!(rule(&report).is_empty(), "{value}");
+    }
+}
+
+#[test]
+fn repository_text_is_not_copied_into_a_limit_message_unboundedly() {
+    let report = checkout("          repository: owner/SECRET_REPO_MARKER\n");
+    // The location and reason are reported; the literal value is not repeated.
+    assert!(!report.to_json().contains("SECRET_REPO_MARKER"));
+}
+
+#[test]
+fn literal_branch_refs_stay_trusted_and_pull_refs_are_flagged() {
+    assert_eq!(checkout("          ref: main\n").status, ScanStatus::Clean);
+    assert_eq!(
+        checkout("          ref: refs/heads/release\n").status,
+        ScanStatus::Clean
+    );
+    for value in [
+        "refs/pull/5/head",
+        "refs/pull/5/merge",
+        "pull/5/head",
+        "pull/5/merge",
+    ] {
+        let report = checkout(&format!("          ref: {value}\n"));
+        assert_eq!(rule(&report).len(), 1, "{value}");
+    }
+    assert_eq!(
+        checkout("          ref: ''\n").status,
+        ScanStatus::Incomplete
+    );
+}
+
+#[test]
+fn trusted_repository_with_head_ref_is_flagged_at_the_ref() {
+    let report = checkout(
+        "          repository: ${{ github.repository }}\n          ref: ${{ github.event.pull_request.head.sha }}\n",
+    );
+    let found = rule(&report);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].location.ends_with(".with.ref"));
+}
+
+#[test]
+fn unresolved_repository_with_head_ref_reports_both_the_finding_and_the_limit() {
+    let report = checkout(
+        "          repository: owner/other\n          ref: ${{ github.event.pull_request.head.sha }}\n",
+    );
+    assert_eq!(rule(&report).len(), 1);
+    assert_eq!(report.status, ScanStatus::Incomplete);
+}

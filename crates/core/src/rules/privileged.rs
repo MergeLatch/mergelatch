@@ -35,6 +35,14 @@ const UNTRUSTED_REFS: &[&str] = &[
     "github.event.pull_request.merge_commit_sha",
 ];
 
+/// Expressions that, used alone as `with.repository`, name the repository the
+/// workflow runs in (the base repository for `pull_request_target`).
+const TRUSTED_REPOSITORIES: &[&str] = &[
+    "github.repository",
+    "github.event.repository.full_name",
+    "github.event.pull_request.base.repo.full_name",
+];
+
 /// References known to select the base repository's own code.
 const TRUSTED_REFS: &[&str] = &[
     "github.sha",
@@ -100,11 +108,17 @@ enum Verdict {
     Unknown(String),
 }
 
-fn judge(text: &str) -> Verdict {
+/// Judges a `with.ref` value. A literal branch or tag name is trusted because
+/// it can only select something inside the repository chosen by `repository`,
+/// which is judged separately.
+fn judge_ref(text: &str) -> Verdict {
+    if text.trim().is_empty() {
+        return Verdict::Unknown("it is empty, so the ref used depends on the action".into());
+    }
     let Ok(expressions) = find_expressions(text) else {
         return Verdict::Unknown("it has a `${{` with no closing `}}`".into());
     };
-    if text.contains("refs/pull/") {
+    if names_pull_ref(text) {
         return Verdict::Untrusted;
     }
     let mut unknown = None;
@@ -113,7 +127,7 @@ fn judge(text: &str) -> Verdict {
             unknown.get_or_insert("it uses a computed property access".to_string());
         }
         for path in &expr.paths {
-            if UNTRUSTED_REFS.iter().any(|p| match_path(path, p).is_some()) {
+            if is_untrusted_path(path) {
                 return Verdict::Untrusted;
             }
             let trusted = TRUSTED_REFS
@@ -131,6 +145,66 @@ fn judge(text: &str) -> Verdict {
         Some(reason) => Verdict::Unknown(reason),
         None => Verdict::Trusted,
     }
+}
+
+/// Judges a `with.repository` value.
+///
+/// actions/checkout can fetch any repository, so a value is trusted only when
+/// it is exactly one expression that names the workflow's own repository. A
+/// literal such as `owner/repo` cannot be shown to be the base repository from
+/// the workflow file alone, so it is reported as unresolved instead of trusted.
+fn judge_repository(text: &str) -> Verdict {
+    if text.trim().is_empty() {
+        return Verdict::Unknown(
+            "it is empty, so the repository used depends on the action".into(),
+        );
+    }
+    let Ok(expressions) = find_expressions(text) else {
+        return Verdict::Unknown("it has a `${{` with no closing `}}`".into());
+    };
+    if expressions
+        .iter()
+        .flat_map(|e| &e.paths)
+        .any(|p| is_untrusted_path(p))
+    {
+        return Verdict::Untrusted;
+    }
+    if expressions.is_empty() {
+        return Verdict::Unknown(
+            "it names a literal repository, which cannot be shown to be the base repository              from the workflow file alone"
+                .into(),
+        );
+    }
+    // Only the plain dotted form is accepted: no operators, functions, or
+    // bracket syntax, so the value cannot differ from the named property.
+    if let [expr] = expressions.as_slice()
+        && text.trim() == expr.text
+    {
+        let inner = expr.text["${{".len()..expr.text.len() - "}}".len()]
+            .trim()
+            .to_ascii_lowercase();
+        if TRUSTED_REPOSITORIES.contains(&inner.as_str()) {
+            return Verdict::Trusted;
+        }
+    }
+    Verdict::Unknown(
+        "it is not a single expression naming the workflow's own repository, so what it selects          cannot be determined statically"
+            .into(),
+    )
+}
+
+/// Whether `path` reaches into pull request head data. A path naming only an
+/// enclosing object (`github.event`) is not trusted either, but it is
+/// unresolved rather than known to be untrusted.
+fn is_untrusted_path(path: &[String]) -> bool {
+    UNTRUSTED_REFS
+        .iter()
+        .any(|p| matches!(match_path(path, p), Some(PathMatch::Exact)))
+}
+
+/// A literal ref that selects a pull request's code.
+fn names_pull_ref(text: &str) -> bool {
+    text.contains("refs/pull/") || shell::is_pull_ref(text)
 }
 
 struct Origin {
@@ -277,7 +351,12 @@ fn judge_checkout(
                 ));
                 continue;
             };
-            match judge(text) {
+            let verdict = if key == "repository" {
+                judge_repository(text)
+            } else {
+                judge_ref(text)
+            };
+            match verdict {
                 Verdict::Trusted => {}
                 Verdict::Untrusted => {
                     return Some(Origin {
@@ -310,10 +389,7 @@ fn mask(text: &str) -> String {
     let mut last = 0;
     for expr in expressions {
         out.push_str(&text[last..expr.offset]);
-        let untrusted = expr
-            .paths
-            .iter()
-            .any(|p| UNTRUSTED_REFS.iter().any(|u| match_path(p, u).is_some()));
+        let untrusted = expr.paths.iter().any(|p| is_untrusted_path(p));
         out.push_str(if untrusted { UNTRUSTED_MARK } else { "EXPR" });
         last = expr.offset + expr.text.len();
     }

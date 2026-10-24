@@ -367,7 +367,7 @@ fn untrusted_checkout(words: &[String]) -> Option<String> {
 }
 
 /// `pull/123/head`, `pull/123/merge`, or `pull/EXPR/head`.
-fn is_pull_ref(word: &str) -> bool {
+pub(crate) fn is_pull_ref(word: &str) -> bool {
     word.split(':').any(|refspec| {
         let parts: Vec<&str> = refspec.split('/').collect();
         parts
