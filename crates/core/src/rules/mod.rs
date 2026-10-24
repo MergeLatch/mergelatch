@@ -2,10 +2,12 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+mod injection;
 mod permissions;
 mod pinning;
 mod workflow;
 
+pub use injection::RULE_SCRIPT_INJECTION;
 pub use permissions::RULE_WRITE_ALL;
 pub use pinning::RULE_UNPINNED;
 
@@ -24,7 +26,7 @@ pub struct RuleInfo {
 
 /// The rules in the built-in ruleset, in identifier order.
 pub fn builtin_rules() -> Vec<RuleInfo> {
-    vec![permissions::INFO, pinning::INFO]
+    vec![permissions::INFO, pinning::INFO, injection::INFO]
 }
 
 /// Result of analyzing one workflow file.
@@ -83,6 +85,7 @@ pub(crate) fn check_workflow(
     let wf = workflow::Workflow::build(top, &mut ctx);
     permissions::check(&mut ctx, &wf);
     pinning::check(&mut ctx, &wf);
+    injection::check(&mut ctx, &wf);
     result
 }
 

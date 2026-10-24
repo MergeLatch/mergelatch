@@ -1,0 +1,11 @@
+name: Boolean
+on: pull_request
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          echo ${{ github.head_ref == 'main' }}
+          echo ${{ contains(github.event.pull_request.title, 'wip') }}
+          echo ${{ startsWith(github.head_ref, 'release/') }}
+          echo ${{ !contains(github.event.pull_request.body, 'x') }}

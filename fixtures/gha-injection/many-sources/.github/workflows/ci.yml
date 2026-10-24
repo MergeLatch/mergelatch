@@ -1,0 +1,15 @@
+name: Many
+on: [issues, issue_comment, push]
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "${{ github.event.issue.title }}" "${{ github.event.issue.body }}"
+      - run: |
+          git checkout ${{ github.head_ref }}
+          echo '${{ github.event.comment.body }}'
+          echo ${{ github.event.head_commit.message }} ${{ github.event.commits[0].message }}
+  b:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo ${{ github.event.pull_request.head.ref }}

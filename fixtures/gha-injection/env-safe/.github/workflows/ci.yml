@@ -1,0 +1,15 @@
+name: Greet safely
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  greet:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Say hello
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          echo "Title: $TITLE"
+          echo "Branch: ${BRANCH}"

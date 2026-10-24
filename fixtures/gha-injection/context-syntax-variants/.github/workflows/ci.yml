@@ -1,0 +1,12 @@
+name: Variants
+on: pull_request
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo ${{ GITHUB.EVENT.PULL_REQUEST.TITLE }}
+      - run: echo ${{ github['event']['pull_request']['body'] }}
+      - run: echo ${{ github.event["pull_request"].head.ref }}
+      - run: echo ${{ format('{0}', github.head_ref) }}
+      - run: echo ${{ toJSON(github.event.pull_request) }}
+      - run: echo ${{ github.event.commits.*.message }}

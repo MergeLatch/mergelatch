@@ -1,0 +1,10 @@
+name: Computed
+on: pull_request
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        field: [title]
+    steps:
+      - run: echo ${{ github.event.pull_request[matrix.field] }}

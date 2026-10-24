@@ -4,7 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mergelatch_core::{
-    IncompleteKind, RULE_UNPINNED, RULE_WRITE_ALL, Report, ScanLimits, ScanStatus, scan_directory,
+    IncompleteKind, RULE_SCRIPT_INJECTION, RULE_UNPINNED, RULE_WRITE_ALL, Report, ScanLimits,
+    ScanStatus, scan_directory,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -210,7 +211,10 @@ fn report_records_scanner_ruleset_and_target() {
     let report = scan_fixture("safe-read-only");
     assert_eq!(report.scanner.name, "mergelatch-core");
     assert_eq!(report.scanner.version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(report.ruleset.rules, [RULE_WRITE_ALL, RULE_UNPINNED]);
+    assert_eq!(
+        report.ruleset.rules,
+        [RULE_WRITE_ALL, RULE_UNPINNED, RULE_SCRIPT_INJECTION]
+    );
     assert!(Path::new(&report.target.path).is_absolute());
 }
 
