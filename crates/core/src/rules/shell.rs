@@ -127,13 +127,19 @@ const SKIPPED: &[&str] = &[
 ];
 
 /// Classifies the commands in `script`, in order.
+///
+/// Anything the reader is unsure about, such as a here-document with no
+/// terminator, is reported as an unrecognized command so callers fail closed.
 pub(crate) fn analyze(script: &str) -> Vec<Cmd> {
-    let script = strip_heredocs(&join_continuations(script));
+    let parsed = segments(&join_continuations(script));
     let mut out = Vec::new();
-    for words in segments(&script) {
+    for words in parsed.segments {
         if let Some(cmd) = classify(&words) {
             out.push(cmd);
         }
+    }
+    for note in parsed.notes {
+        out.push(Cmd::Unknown(note));
     }
     out
 }
@@ -142,39 +148,17 @@ fn join_continuations(script: &str) -> String {
     script.replace("\\\r\n", " ").replace("\\\n", " ")
 }
 
-/// Removes here-document bodies, which are data and not commands.
-fn strip_heredocs(script: &str) -> String {
-    let mut out = String::new();
-    let mut delimiter: Option<String> = None;
-    for line in script.lines() {
-        if let Some(d) = &delimiter {
-            if line.trim() == d {
-                delimiter = None;
-            }
-            continue;
-        }
-        if let Some(pos) = line.find("<<") {
-            let rest = line[pos + 2..].trim_start_matches(['-', ' ']);
-            let word: String = rest
-                .chars()
-                .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | '&' | ')'))
-                .filter(|c| !matches!(c, '\'' | '"' | '\\'))
-                .collect();
-            if !word.is_empty() && !line[pos..].starts_with("<<<") {
-                delimiter = Some(word);
-            }
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
-}
-
 /// Splits a script into commands, each a list of unquoted words.
 ///
 /// Separators are `;`, `|`, `&`, newlines, and the start and end of `$(...)`
 /// and backtick substitutions. Quotes group words and hide separators.
-fn segments(script: &str) -> Vec<Vec<String>> {
+struct Parsed {
+    segments: Vec<Vec<String>>,
+    /// Reasons the script could not be read with confidence.
+    notes: Vec<String>,
+}
+
+fn segments(script: &str) -> Parsed {
     #[derive(Default)]
     struct Out {
         segs: Vec<Vec<String>>,
@@ -206,6 +190,10 @@ fn segments(script: &str) -> Vec<Vec<String>> {
     let (mut single, mut double, mut backtick) = (false, false, false);
     // Saved quote state for each open `$(` or backtick.
     let mut subs: Vec<bool> = Vec::new();
+    // Here-document delimiters seen on the current line, with whether `<<-`
+    // (leading tabs ignored) was used. Their bodies start on the next line.
+    let mut pending: Vec<(String, bool)> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
 
     let mut i = 0;
     while i < chars.len() {
@@ -255,6 +243,41 @@ fn segments(script: &str) -> Vec<Vec<String>> {
                 i += 1;
             }
             continue;
+        } else if c == '<' && next == Some('<') && !double {
+            if chars.get(i + 2) == Some(&'<') {
+                // A here-string (`<<<`) is a redirection, not a here-document.
+                for _ in 0..3 {
+                    out.push('<');
+                }
+                i += 3;
+                continue;
+            }
+            match heredoc_delimiter(&chars, i + 2) {
+                Some((delimiter, strip_tabs, end)) => {
+                    out.end_word();
+                    pending.push((delimiter, strip_tabs));
+                    i = end;
+                    continue;
+                }
+                None => out.push(c),
+            }
+        } else if c == '\n' && !double {
+            out.end_segment();
+            if !pending.is_empty() {
+                match skip_heredoc_bodies(&chars, i + 1, &pending) {
+                    Some(after) => {
+                        pending.clear();
+                        i = after;
+                        continue;
+                    }
+                    None => {
+                        // The terminator was not found. Do not discard the
+                        // lines that follow: read them as commands, and say so.
+                        notes.push("here-document with no terminator was not skipped".into());
+                        pending.clear();
+                    }
+                }
+            }
         } else if c == '&' && !double && (next == Some('>') || (i > 0 && chars[i - 1] == '>')) {
             // A redirection such as `2>&1` or `&>file`, not a background operator.
             out.push(c);
@@ -268,7 +291,81 @@ fn segments(script: &str) -> Vec<Vec<String>> {
         i += 1;
     }
     out.end_segment();
-    out.segs
+    if !pending.is_empty() {
+        notes.push("here-document with no body or terminator".into());
+    }
+    Parsed {
+        segments: out.segs,
+        notes,
+    }
+}
+
+/// Reads the delimiter after `<<`: returns the delimiter, whether tabs are
+/// stripped (`<<-`), and the index after the delimiter word. Quotes and
+/// backslashes in the word are removed, as the shell does. Returns `None` when
+/// what follows does not look like a delimiter, for example `1<<2`.
+fn heredoc_delimiter(chars: &[char], mut j: usize) -> Option<(String, bool, usize)> {
+    let strip_tabs = chars.get(j) == Some(&'-');
+    if strip_tabs {
+        j += 1;
+    }
+    while matches!(chars.get(j), Some(' ') | Some('\t')) {
+        j += 1;
+    }
+    let first = *chars.get(j)?;
+    if !(first.is_alphabetic() || matches!(first, '_' | '\'' | '"' | '\\')) {
+        return None;
+    }
+    let mut word = String::new();
+    while let Some(&c) = chars.get(j) {
+        match c {
+            '\'' | '"' => {
+                let close = chars[j + 1..].iter().position(|x| *x == c)?;
+                word.extend(&chars[j + 1..j + 1 + close]);
+                j += close + 2;
+            }
+            '\\' => {
+                word.push(*chars.get(j + 1)?);
+                j += 2;
+            }
+            c if c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '<' | '>') => break,
+            c => {
+                word.push(c);
+                j += 1;
+            }
+        }
+    }
+    (!word.is_empty()).then_some((word, strip_tabs, j))
+}
+
+/// Skips the bodies of the pending here-documents, which start at `start`.
+/// Returns the index after the last terminator line, or `None` if any
+/// terminator is missing.
+fn skip_heredoc_bodies(chars: &[char], start: usize, pending: &[(String, bool)]) -> Option<usize> {
+    let mut idx = start;
+    for (delimiter, strip_tabs) in pending {
+        loop {
+            if idx >= chars.len() {
+                return None;
+            }
+            let end = chars[idx..]
+                .iter()
+                .position(|c| *c == '\n')
+                .map_or(chars.len(), |p| idx + p);
+            let line: String = chars[idx..end].iter().collect();
+            let line = line.trim_end_matches('\r');
+            let line = if *strip_tabs {
+                line.trim_start_matches('\t')
+            } else {
+                line
+            };
+            idx = (end + 1).min(chars.len());
+            if line == delimiter {
+                break;
+            }
+        }
+    }
+    Some(idx)
 }
 
 fn is_assignment(word: &str) -> bool {
@@ -1209,5 +1306,80 @@ mod tests {
     fn shell_alias_definitions_are_not_safe() {
         assert!(is_unknown("alias ll='ls -l'"));
         assert!(is_unknown("unalias ll"));
+    }
+
+    // ---- Here-documents ------------------------------------------------------
+
+    #[test]
+    fn heredoc_marker_inside_quotes_or_comments_is_not_a_heredoc() {
+        for script in [
+            "echo \"<<NOT_A_HEREDOC\"\nnpm test",
+            "echo '<<NOT_A_HEREDOC'\nnpm test",
+            "# cat <<EOF\nnpm test",
+            "echo hi # <<EOF\nnpm test",
+            "echo \\<<EOF\nnpm test",
+            "echo $((1<<2))\nnpm test",
+        ] {
+            assert!(
+                analyze(script).contains(&exec("npm")),
+                "{script}: {:?}",
+                analyze(script)
+            );
+        }
+    }
+
+    #[test]
+    fn heredoc_bodies_are_skipped_in_every_valid_form() {
+        for script in [
+            "cat <<EOF\nnpm test\nEOF\nmake",
+            "cat <<'EOF'\nnpm test\nEOF\nmake",
+            "cat <<\"EOF\"\nnpm test\nEOF\nmake",
+            "cat <<\\EOF\nnpm test\nEOF\nmake",
+            "cat <<E\"O\"F\nnpm test\nEOF\nmake",
+            "cat <<-EOF\n\tnpm test\n\tEOF\nmake",
+            "cat << EOF\nnpm test\nEOF\nmake",
+            "cat <<A <<B\nnpm test\nA\nnpm test\nB\nmake",
+            "cat <<EOF | tee out\nnpm test\nEOF\nmake",
+            "cat <<EOF > out.txt\nnpm test\nEOF\nmake",
+        ] {
+            assert_eq!(analyze(script), [exec("make")], "{script}");
+        }
+    }
+
+    #[test]
+    fn the_terminator_must_match_exactly() {
+        // `EOF2` and an indented `EOF` do not end a plain `<<EOF`, so this
+        // here-document has no terminator and its body is read as commands.
+        let cmds = analyze("cat <<EOF\nnpm test\nEOF2\n  EOF\nmake");
+        assert!(cmds.contains(&exec("npm")));
+        assert!(cmds.contains(&exec("make")));
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::Unknown(m) if m.contains("here-document")))
+        );
+    }
+
+    #[test]
+    fn here_strings_are_not_here_documents() {
+        assert_eq!(analyze("cat <<< \"text\"\nnpm test"), [exec("npm")]);
+        assert_eq!(analyze("cat <<<EOF\nnpm test"), [exec("npm")]);
+    }
+
+    #[test]
+    fn heredoc_without_a_terminator_is_unknown_and_not_skipped() {
+        let cmds = analyze("cat <<EOF\ntext\nnpm test");
+        assert!(cmds.contains(&exec("npm")));
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::Unknown(m) if m.contains("no terminator")))
+        );
+        let one_line = analyze("cat <<EOF");
+        assert!(one_line.iter().any(|c| matches!(c, Cmd::Unknown(_))));
+    }
+
+    #[test]
+    fn a_command_that_reads_a_heredoc_is_still_classified() {
+        assert_eq!(analyze("bash <<EOF\nnpm test\nEOF"), [exec("bash")]);
+        assert_eq!(analyze("cat <<EOF | sh\nnpm test\nEOF"), [exec("sh")]);
     }
 }

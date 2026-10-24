@@ -611,3 +611,87 @@ fn a_trusted_only_job_with_several_checkouts_is_clean() {
     ));
     assert_eq!(report.status, ScanStatus::Clean);
 }
+
+// ---- Global options before checkout commands, and here-documents ---------------
+
+/// A trusted base checkout followed by one multi-line `run:` script. Any pull
+/// request code must therefore come from the script itself.
+fn base_then_script(script: &str) -> Report {
+    let body: String = script.lines().map(|l| format!("          {l}\n")).collect();
+    scan_text(&format!(
+        "on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@{SHA}\n      - run: |\n{body}"
+    ))
+}
+
+/// An untrusted head checkout followed by one multi-line `run:` script.
+fn head_then_script(script: &str) -> Report {
+    let body: String = script.lines().map(|l| format!("          {l}\n")).collect();
+    scan_text(&format!(
+        "on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@{SHA}\n        with:\n          ref: ${{{{ github.event.pull_request.head.sha }}}}\n      - run: |\n{body}"
+    ))
+}
+
+#[test]
+fn a_here_document_marker_inside_quotes_does_not_hide_later_commands() {
+    // The quoted text is not a here-document, so `npm test` still runs.
+    for script in [
+        "echo \"<<NOT_A_HEREDOC\"\nnpm test",
+        "echo '<<NOT_A_HEREDOC'\nnpm test",
+        "echo \"<<X\"\ngh pr checkout 12\nnpm test",
+        "# cat <<EOF\nnpm test",
+        "echo hi # <<EOF\nnpm test",
+        "echo \\<<EOF\nnpm test",
+    ] {
+        let report = head_then_script(script);
+        assert_eq!(rule(&report).len(), 1, "{script}: {:#?}", report);
+    }
+    let report = base_then_script("echo \"<<X\"\ngh pr checkout 12\nnpm test");
+    assert_eq!(rule(&report).len(), 1);
+}
+
+#[test]
+fn real_here_document_bodies_are_data_and_commands_after_them_are_not() {
+    let clean = head_then_script("cat <<EOF\nnpm test\nmake\nEOF\necho done");
+    assert_eq!(clean.status, ScanStatus::Clean, "{:#?}", clean);
+
+    for script in [
+        "cat <<EOF\ntext\nEOF\nnpm test",
+        "cat <<'EOF'\ntext\nEOF\nnpm test",
+        "cat <<\"EOF\"\ntext\nEOF\nnpm test",
+        "cat <<\\EOF\ntext\nEOF\nnpm test",
+        "cat <<-EOF\n\ttext\n\tEOF\nnpm test",
+        "cat <<A <<B\nfirst\nA\nsecond\nB\nnpm test",
+        "cat <<EOF | tee out\ntext\nEOF\nnpm test",
+    ] {
+        let report = head_then_script(script);
+        assert_eq!(rule(&report).len(), 1, "{script}: {:#?}", report);
+    }
+}
+
+#[test]
+fn a_here_string_is_not_a_here_document() {
+    let report = head_then_script("cat <<< \"text\"\nnpm test");
+    assert_eq!(rule(&report).len(), 1);
+}
+
+#[test]
+fn a_here_document_without_a_terminator_is_an_analysis_limit_and_is_not_skipped() {
+    let report = head_then_script("cat <<EOF\ntext\nnpm test");
+    assert_eq!(report.status, ScanStatus::Incomplete);
+    assert!(
+        report
+            .incomplete
+            .iter()
+            .any(|i| i.detail.contains("here-document")),
+        "{:#?}",
+        report.incomplete
+    );
+    // The lines after the marker were still analyzed.
+    assert_eq!(rule(&report).len(), 1);
+}
+
+#[test]
+fn a_command_fed_by_a_here_document_is_still_classified() {
+    let report = head_then_script("bash <<EOF\nnpm test\nEOF");
+    assert_eq!(rule(&report).len(), 1);
+}
