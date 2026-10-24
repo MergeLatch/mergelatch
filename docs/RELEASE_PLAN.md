@@ -19,7 +19,8 @@ The scanner reports its version as `0.1.0` (from `Cargo.toml`), not `0.1.0-rc.1`
 | `afc7e65d6723029c22935f82c7fc9562d5831565` | Implementation tested: in this repository, in `mergelatch-consumer-trial`, and on a first-time external fork pull request | **Yes** (runs listed in [REVIEW_READINESS.md](REVIEW_READINESS.md#verification-evidence)) |
 | `4af8f9aa9340fee38abb7c9f3b554c53ad645d64` | `main` when the review package was prepared | **No.** No run pinned this SHA |
 | `2a1a514b94754b146a690cf98ef59bc649d423ff` | Corrected D-1 event allowlist: in-repository, external consumer, rejected event, and first-time external fork PR (README only) | **Yes** ([verification evidence](REVIEW_READINESS.md#verification-evidence), including [fork run 40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817)) |
-| Earlier review-readiness commits (apart from the separately verified D-1 SHA above) | Documentation and tests | **Not recorded as separately pinned** |
+| `95bad26bc731caa913861e95f75bf2c4de3dc6b4` | Merged PR #18, D-2 fail-closed revision handling | **Yes**: [source trial 40119258974](https://github.com/MergeLatch/mergelatch/actions/runs/40119258974) and [consumer trial 40120225597](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40120225597); no new fork run, no visual reinspection of rendered summary, no independent sign-off |
+| Other intermediate documentation/test commits | Not claimed as separately pinned | **Not independently recorded as pinned** |
 
 ### Differences from the tested commit
 
@@ -47,6 +48,10 @@ The exact candidate is chosen when the blockers close. It is not named here beca
 ### The implementation has changed (D-1)
 
 Decision D-1 has been implemented: `action/mergelatch_action.py` now accepts only the `pull_request` event. Any commit that contains it is a new implementation. The procedure below therefore applies to the candidate; `afc7e65…` remains the evidence for the earlier implementation only. Status of those checks for `2a1a514b94754b146a690cf98ef59bc649d423ff` (merge of #12): steps 1 and 2 are done (in-repository run 40106718920 and consumer run 40106918299, both on GitHub and inspected); the `workflow_dispatch` rejected-event run in step 3 is **done** (run [40108606160](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40108606160): the Action failed as intended and the assertions passed); step 4 (README-only external fork) is **done** ([consumer PR #6](https://github.com/MergeLatch/mergelatch-consumer-trial/pull/6), [run 40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817), after maintainer approval; workflow-editing fork not tested); step 6 is done in [ACTION.md](ACTION.md#verification-status). Independent review and a release remain pending; this evidence does not make the Action release-ready.
+
+### D-2 verification status (2026-10-24)
+
+D-2 merged in PR #18 at `95bad26bc731caa913861e95f75bf2c4de3dc6b4`. Source PR #19 (merged) verified it as a full-SHA pinned Action in [run 40119258974](https://github.com/MergeLatch/mergelatch/actions/runs/40119258974), including file hashes and deliberate fail-closed revision scenarios. The separate consumer PR #7 (merged) verified the same immutable SHA in [run 40120225597](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40120225597), including two intentionally failed Action steps for unavailable nested revisions. Neither run establishes independent human approval. No D-2 fork trial was run, the rendered D-2 job summaries were not inspected separately, and **the exact eventual release-candidate commit has not been chosen or tested**. No tag or release is authorized.
 
 ### If an implementation path changes
 
