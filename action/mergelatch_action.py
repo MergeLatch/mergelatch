@@ -670,8 +670,13 @@ def _action_revision_label(context: dict) -> str:
     """The immutable revision GitHub loaded the Action from, as reported by the
     runner, or a clear statement that there is none."""
     repository = context["action_repository"] or "unknown repository"
+    if context["action_sha"] and context["action_repository"]:
+        # Both parts were validated against strict patterns (no backticks or
+        # markup). A code span is used because GitHub rewrites "owner/repo@sha"
+        # in ordinary text into "owner/repo@abc1234", hiding most of the SHA.
+        return "`%s@%s`" % (repository, context["action_sha"])
     if context["action_sha"]:
-        return md("%s@%s" % (repository, context["action_sha"]), 120)
+        return "`%s`" % context["action_sha"]
     if context["action_ref"]:
         return "NOT a full commit SHA (reference: %s)" % md(context["action_ref"], 40)
     return "not reported (a local Action has no reference)"
