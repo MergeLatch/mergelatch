@@ -1,26 +1,26 @@
 # EXAMPLE FOR AN ADVISORY TRIAL. NOT A RELEASE, NOT A MERGE GATE.
 #
-# The commit named in `uses:` below is the trial-tested commit:
+# The commit named in `uses:` below:
 #
-#   - Verified source commit: cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5, the
-#     merge commit of the reviewed Action (pull request #7) on main.
-#   - Trial-tested: GitHub downloaded exactly that commit, separately from the
-#     checkout being scanned, and ran it in this repository's pull request
-#     trial (.github/workflows/action-trial.yml), on a GitHub-hosted runner.
+#   - Source reviewed: afc7e65d6723029c22935f82c7fc9562d5831565, the merge
+#     commit of pull request #9 on main.
+#   - SHA-pinned trial tested: GitHub downloaded exactly that commit, separately
+#     from the checkout being scanned, and ran it in this repository's pull
+#     request trial (.github/workflows/action-trial.yml).
+#   - Rendered full SHA verified: yes. Its job summary, read on GitHub, shows
+#     the complete commit SHA of the Action.
+#   - External consumer tested: no. It has been tried in this repository only,
+#     not in a separate repository and not from a fork pull request.
 #   - Published release: none. MergeLatch has not published a release, and a
 #     commit that can be referenced by SHA is not thereby an official release.
 #
-# That commit reports the full SHA it was loaded from in its `action-revision`
-# output, but its rendered job summary shows only a shortened form of it
-# (GitHub shortens owner/repo@sha in ordinary text); a later commit fixes the
-# display. It has been tried in this repository only, not in a separate
-# consumer repository and not from a fork. Update the SHA only by reviewing a
-# newer commit and replacing the whole 40-character value, never by following a
-# branch or tag.
+# Update the SHA only by reviewing a newer commit and replacing the whole
+# 40-character value, never by following a branch or tag.
 #
 # This scan is advisory. A pull request can change this workflow file, so the
-# result is not a merge gate and must not be a required check. See
-# docs/ACTION.md.
+# result is not a merge gate and must not be a required check. A green result
+# does not mean a pull request is safe; findings and incomplete scans still need
+# human review. See docs/ACTION.md.
 name: MergeLatch advisory scan
 
 on:
@@ -49,7 +49,7 @@ jobs:
 
       - name: MergeLatch advisory scan
         id: mergelatch
-        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
+        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
         # with:
         #   scan-directory: .
 
