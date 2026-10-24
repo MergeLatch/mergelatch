@@ -113,7 +113,7 @@ Not assumed: that the Action blocks anything, that a green check means a pull re
 | Child processes get an environment built from fixed values; `HOME` from the account database | `trusted_environment` | Tests including real `cargo`, `rustup`, compiler; GitHub run with hostile settings |
 | `LD_*` and `GCONV_PATH` cause a hard failure | `check_inherited_environment` | Unit tests; GitHub run that must fail |
 | Only GitHub-hosted Ubuntu x86-64 Linux runners | `check_runner` | Unit tests |
-| `pull_request_target` and `workflow_run` are refused | `prepare` | Unit test. Not run on GitHub. See finding F-01 |
+| Only `pull_request` is accepted; all other event names fail preparation (decision D-1, implemented after the review; not in `afc7e65…`) | `prepare`, `SUPPORTED_EVENTS` | Tests that follow 26 event values through prepare, scan and report. Not run on GitHub. See finding F-01 |
 | `scan-directory` must be relative, free of `..`, resolve inside the workspace, and exist; a missing `.git` is an error | `resolve_scan_directory`, `prepare` | Unit tests |
 | Scanner opens files relative to a directory handle with `cap-std`; symlinks, pipes, and devices are not followed or read | `crates/core/src/discover.rs`, `fsaccess.rs` | Deterministic swap tests and concurrent stress tests (Linux) |
 | The scanner never runs scanned content, Git, or the network | `crates/` | Safety tests with inert fixtures |
@@ -173,7 +173,7 @@ These are local results. The GitHub-hosted counterparts are the runs above. `car
 
 Black-box checks against the release binary and the real helper (inert files only, every command under a timeout):
 
-- **Event names.** `prepare` was run on 17 event names. Only `pull_request_target` and `workflow_run` were refused (finding F-01).
+- **Event names (before D-1).** `prepare` was run on 17 event names. Only `pull_request_target` and `workflow_run` were refused (finding F-01).
 - **Revision check.** The repository root reports `matches-merge`; a subdirectory of the same repository reports `unavailable` and a clean status (F-02).
 - **Report size.** One 370 KB workflow with 10,000 unpinned steps produced a 9.5 MB report. The helper turned it into `error` (F-03).
 - **Pathological input.** Fourteen stress workflows (20,000-deep command substitution, brace and expression nesting; quote storms; 5,000 heredocs; 60,000-long `&&` and pipe chains; 10,000 steps; 5,000 jobs) and eight YAML files (60,000 keys, a 1 MB scalar, 60,000 alias uses, nested collection aliases, an 80,000-entry flow map, nesting at the depth limit, 30,000 tagged values). Every scan finished in at most 0.33 s. For the YAML set, peak memory was at most about 20 MB (memory was not measured for the first set). The 30,000-tag file exceeded the 1 MiB file limit and was reported incomplete as `file_too_large` without being parsed. No super-linear behavior was observed. This samples inputs; it does not prove a bound.
@@ -195,7 +195,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 
 | ID | Type | Component | Summary | Severity | Reproduced | Disposition |
 | --- | --- | --- | --- | --- | --- | --- |
-| F-01 | Confirmed behavior; documentation was inconsistent | `prepare`, `PRIVILEGED_EVENTS` | Event guard is a refusal list of two names, not an allowlist | Informational (docs); Low (hardening) | Yes | Docs corrected. Allowlist is decision D-1. No change required for safety |
+| F-01 | Confirmed behavior; documentation was inconsistent | `prepare`, `PRIVILEGED_EVENTS` (as reviewed) | Event guard was a refusal list of two names, not an allowlist | Informational (docs); Low (hardening) | Yes | Docs corrected. **D-1 implemented on branch `fix/action-pull-request-event-allowlist`; not independently reviewed, not released, not yet verified as a pinned Action** |
 | F-02 | Design limitation | `check_revision`, scanner revision reader | No revision check for subdirectory scans or non-`pull_request` events; result stays green | Low | Yes | Documented. Decision D-2 |
 | F-03 | Confirmed behavior; fail-closed | scanner (no findings cap), `parse_report` | A small workflow can produce a report over the 5 MiB limit; the step fails with `error` | Low | Yes | Regression test added. Accepted; decision D-3 |
 | F-04 | Design limitation | consumer workflow | A pull request can edit or remove the caller's step | High if used as a gate; none as advisory | Documented; fork trial did not try it | Documented and prohibited as a required check |
@@ -210,12 +210,12 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 
 ### F-01. Event guard
 
-- **Affected:** `PRIVILEGED_EVENTS = ("pull_request_target", "workflow_run")` and its check in `prepare`.
+- **Affected (as reviewed at `afc7e65…` and `4af8f9a…`):** `PRIVILEGED_EVENTS = ("pull_request_target", "workflow_run")` and its check in `prepare`. The text below records the finding as it was; the current behavior is in the disposition.
 - **Behavior (reproduced):** exactly those two names are refused. `push`, `schedule`, `workflow_dispatch`, `issue_comment`, `pull_request_review`, `pull_request_review_comment`, `repository_dispatch`, `merge_group`, `issues`, `workflow_call`, `release`, `fork`, and unrecognized names run normally with `revision-check=not-applicable`. Matching is exact: `Pull_Request` and a trailing-space variant also run.
 - **Threat:** a maintainer who believes the Action accepts only `pull_request` runs it under an event such as `issue_comment` (which runs the default branch's workflow and can have secrets and a write-capable token) in a job that also checks out pull request code. The Action does not make that job unsafe: it uses no secrets, builds and runs the scanner in an environment assembled from fixed values, and never executes the scanned content. The danger lies in the rest of that job, which the refusal would not have prevented even for the two refused events.
 - **Attacker capability required:** none beyond what the workflow author already grants; a contributor cannot choose the event.
 - **Severity:** Informational as a documentation inconsistency. No demonstrated vulnerability, so none is claimed.
-- **Disposition:** the README, `ACTION.md`, and the threat model now state the actual behavior. Whether to change the guard to accept only `pull_request` (decision D-1) is a hardening choice, not a fix for a defect.
+- **Disposition:** the documentation was first corrected to state the actual behavior. The maintainer then decided D-1 and the guard was replaced by an exact allowlist, `SUPPORTED_EVENTS = ("pull_request",)`, with no normalization; every other name fails preparation with a fixed message, skips build and scan, and ends in status `error`. This is a hardening change, not the fix for a defect. It changes `action/mergelatch_action.py`, so `afc7e65…` no longer represents the current implementation and the targeted re-verification in [RELEASE_PLAN.md](RELEASE_PLAN.md) is required. Status: implemented on the branch, **not independently reviewed, not released, not yet verified as a pinned Action**.
 
 ### F-02. Revision check scope
 
@@ -239,7 +239,7 @@ See the table. F-04 and F-05 are the main reasons the Action must not be used as
 
 | ID | Question | Recommendation of this review | Cost |
 | --- | --- | --- | --- |
-| D-1 | Accept only `pull_request`? | Yes, before `v0.1.0-rc.1`: it makes the code match the documentation and removes the ambiguity in F-01 | Changes `mergelatch_action.py`; new SHA; targeted re-verification |
+| D-1 | Accept only `pull_request`? | Yes, before `v0.1.0-rc.1`: it makes the code match the documentation and removes the ambiguity in F-01. **Decided and implemented; awaiting independent review and pinned-SHA verification** | Changes `mergelatch_action.py`; new SHA; targeted re-verification |
 | D-2 | Treat `unavailable` as an error on `pull_request`, or read `.git` from the workspace root? | Decide with the reviewer; the current documented behavior is acceptable for an advisory Action | Changes the helper or the scanner; re-verification |
 | D-3 | Cap findings in the scanner? | Optional | Changes the scanner; re-verification |
 | D-4 | Is building from crates.io and rustup on every run acceptable for a first release, or should a checksummed prebuilt binary be released? | Reviewer's judgment; this review accepts it for an advisory trial | Release engineering |
@@ -263,7 +263,7 @@ Any of D-1 to D-3 changes a trusted implementation file. If one is made, the pre
 A release candidate tag must not be created until all of these are closed:
 
 1. **Independent human review is recorded** (see [Sign-off](#sign-off)). Currently pending.
-2. **D-1 is decided.** If the guard is changed, the new commit goes through the targeted re-verification below.
+2. **D-1 is verified.** It is decided and implemented, but the corrected implementation has not run as a pinned Action, has had no independent review, and needs the targeted re-verification in [RELEASE_PLAN.md](RELEASE_PLAN.md).
 3. **A consumer-trial run exists for the exact commit to be tagged,** unless the tag is placed on `afc7e65…` itself (see [RELEASE_PLAN.md](RELEASE_PLAN.md) for why that is not recommended).
 4. **F-05, F-07, F-08 are confirmed or dismissed** by the reviewer.
 5. **The reviewer's checklist items below are answered** and any resulting defect is fixed through the private vulnerability process if it is exploitable.
@@ -325,7 +325,7 @@ Mark each item with the commit SHA reviewed and the result.
 **Conditionally ready for independent review; blocked for a release candidate tag.**
 
 - Ready to hand to a reviewer: the scope, trust boundaries, controls, limitations, evidence, and findings are written down; local checks pass; the Action has run from three contexts on GitHub; no confirmed defect was found.
-- Blocked for `v0.1.0-rc.1`: no independent human has reviewed the code, three hypotheses are unconfirmed, and one hardening decision (D-1) should be made first because it would change the implementation.
+- Blocked for `v0.1.0-rc.1`: no independent human has reviewed the code, three hypotheses are unconfirmed, and the implemented hardening decision (D-1) changed the trusted helper, so the corrected implementation still needs pinned-SHA verification.
 - Whatever happens, the Action stays advisory: it must not be a required check, and no enforcement is claimed.
 
 ## Sign-off
