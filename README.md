@@ -2,7 +2,7 @@
 
 **Protect the contribution before it becomes part of the project.**
 
-> **Project status: early development.** MergeLatch has a working command-line scanner with one detection rule (GitHub Actions `permissions: write-all`). It has not yet published a GitHub Action, desktop application, or installer, and it has no releases. Everything under "Planned" below describes intended features, not capabilities available today.
+> **Project status: early development.** MergeLatch has a working command-line scanner with four detection rules for GitHub Actions workflows (see below). It has not yet published a GitHub Action, desktop application, or installer, and it has no releases. Everything under "Planned" below describes intended features, not capabilities available today.
 
 MergeLatch is an open-source project for checking security-sensitive changes in Git repositories. It is designed for maintainers reviewing pull requests and developers working with code cloned onto their computers.
 
@@ -13,7 +13,7 @@ The aim is simple: help people understand what changed, what might be dangerous,
 | Capability | Status |
 | --- | --- |
 | `mergelatch scan` CLI with human-readable and JSON output | Implemented |
-| Rule ML-GHA-001: explicit `permissions: write-all` in workflows | Implemented |
+| Rules ML-GHA-001 to ML-GHA-004 for GitHub Actions workflows (see [Detection coverage](#detection-coverage)) | Implemented |
 | Local scanning with no network access, hosted service, or AI model | Implemented |
 | GitHub Action, Sentinel desktop app, Agent Guard, dependency and malware checks, merge enforcement | Not implemented |
 
@@ -71,21 +71,27 @@ Use the exit code, not the absence of output, to decide whether a scan passed. I
 ### Interpreting results
 
 - **clean**: every `.github/workflows/*.yml` and `*.yaml` file was read and parsed, and no rule matched. It does not mean the repository is safe.
-- **findings**: a rule matched. Each finding shows the file, line, YAML location, the matching source line, an explanation, and a suggested fix. A finding is a configuration to review, not proof of malicious intent.
-- **incomplete**: at least one inspection did not finish. The report lists each file and the reason: unreadable, not a regular file, outside the scan root, too large, invalid UTF-8, invalid or unsupported YAML, a resource limit, or a timeout.
+- **findings**: a rule matched. Each finding shows the file, line, YAML location, short evidence taken from the matching setting or expression (not the whole source line), an explanation, and a suggested fix. A finding is a configuration to review, not proof of malicious intent.
+- **incomplete**: at least one inspection did not finish. The report lists each file and the reason: unreadable, not a regular file, outside the scan root, too large, invalid UTF-8, invalid or unsupported YAML, a construct the rules cannot analyze (`analysis_limit`), a resource limit, or a timeout.
 - **error**: the scan could not start.
 
 JSON reports include a `schema_version`, the scanner version, the ruleset identity, the limits in force, the target path, and the Git commit when it can be read from `.git`. They contain no timestamps, so the same input produces the same report.
 
 ### Detection coverage
 
-| Rule | Detects |
-| --- | --- |
-| ML-GHA-001 | `permissions: write-all` set at the workflow level or on a job, in `.github/workflows/*.yml` and `*.yaml`. The setting is found by parsing YAML, so comments, strings, block scalars, and unrelated keys named `permissions` (for example an action input) are not flagged. |
+| Rule | Severity | Detects |
+| --- | --- | --- |
+| ML-GHA-001 | medium | Explicit `permissions: write-all` at the workflow or job level. |
+| ML-GHA-002 | medium | External actions, reusable workflows, and Docker images referenced by a mutable tag or branch instead of a full commit SHA or digest. |
+| ML-GHA-003 | high | Attacker-controllable context values (pull request and issue titles and bodies, comment bodies, commit messages, branch names) expanded directly inside `run:` scripts. |
+| ML-GHA-004 | high | A `pull_request_target` job that checks out pull request code and then builds, installs, tests, or runs it. |
+
+Each rule's coverage, example finding, remediation, false-positive risks, and unsupported cases are in [docs/RULES.md](docs/RULES.md). These are focused checks for specific patterns. They do not detect malicious workflows in general, and MergeLatch is not an antivirus or a complete malware detector.
 
 ### Known limitations
 
-- Only one rule exists. MergeLatch does not detect malicious workflows in general, dangerous triggers such as `pull_request_target`, individual write scopes such as `contents: write`, unpinned actions, script injection, dependency problems, secrets, or malware.
+- Only four narrow rules exist. MergeLatch does not detect malicious workflows in general, individual write scopes such as `contents: write`, `workflow_run` risks, script injection outside `run:` steps, dependency problems, secrets, or malware. Rules can produce false positives and miss variations; see [docs/RULES.md](docs/RULES.md) for each rule's unsupported cases.
+- Where a rule cannot analyze a construct (an expression in `uses:`, a computed property access, a checkout ref that cannot be resolved), the scan is reported as incomplete instead of clean. Some ordinary workflows will therefore return exit code 2 until the construct is simplified.
 - Only the repository root `.github/workflows` directory is read. Composite actions, reusable workflows in other repositories, and files in subdirectories are not analyzed.
 - YAML merge keys (`<<`) and aliases that point to mappings are not expanded. They make the scan incomplete rather than being ignored.
 - Files with more than one YAML document are reported as incomplete.
@@ -232,4 +238,4 @@ MergeLatch is licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
-**Current status:** early development; one rule implemented. Installation links, release badges, version numbers, performance claims, and coverage statistics will be added only after they are verified.
+**Current status:** early development; four rules implemented. Installation links, release badges, version numbers, performance claims, and coverage statistics will be added only after they are verified.
