@@ -304,6 +304,140 @@ jobs:
           fi
           [ -e "${WORKSPACE}/fixtures/action-hostile/CONTROL_BASH_ENV_RAN" ] || fail "the BASH_ENV control did not run"
 
+      # F-08. The helper is loaded from the downloaded, hash-verified Action directory and its real
+      # build() is run against FAKE rustup, rustc and cargo, with a 2 second timeout. No real build runs.
+      # The fake cargo starts a child and a grandchild (sleep 3607, killed by the test itself in a
+      # finally block) so this checks that a timeout stops the whole process tree. It does not test,
+      # and the Action does not claim to stop, a process that starts its own session.
+      - name: Verify the build timeout stops the whole process tree (fake build, pinned helper)
+        run: |
+          set -euo pipefail
+          action_dir="$(cd "${RUNNER_WORKSPACE}/../_actions/MergeLatch/mergelatch/${ACTION_SHA}" && pwd -P)"
+          ACTION_DIR="${action_dir}" /usr/bin/python3 -I - <<'PY'
+          import hashlib, importlib.util, os, shutil, stat, sys, tempfile, time
+
+          action_dir = os.environ["ACTION_DIR"]
+          helper_path = os.path.join(action_dir, "action", "mergelatch_action.py")
+          with open(helper_path, "rb") as handle:
+              if hashlib.sha256(handle.read()).hexdigest() != os.environ["HELPER_SHA256"]:
+                  sys.exit("the helper under test is not the verified file")
+          spec = importlib.util.spec_from_file_location("pinned_helper", helper_path)
+          mla = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mla)
+
+          root = tempfile.mkdtemp(prefix="f08-")
+          pids = {}
+
+
+          def alive(pid):
+              try:
+                  os.kill(pid, 0)
+                  with open("/proc/%d/stat" % pid) as handle:
+                      return handle.read().rsplit(")", 1)[1].split()[0] != "Z"
+              except OSError:
+                  return False
+
+
+          def fake(path, body):
+              with open(path, "w") as handle:
+                  handle.write("#!/bin/sh\n" + body)
+              os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+
+
+          def fail(message):
+              print("F-08 trial FAILED: " + message)
+              raise SystemExit(1)
+
+
+          def setup(name, cargo_body):
+              home = os.path.join(root, name, "home")
+              cargo_bin = os.path.join(home, ".cargo", "bin")
+              os.makedirs(cargo_bin)
+              fake(os.path.join(cargo_bin, "rustup"), "exit 0\n")
+              fake(os.path.join(cargo_bin, "rustc"), "echo rustc fake\n")
+              fake(os.path.join(cargo_bin, "cargo"), cargo_body)
+              action_root = os.path.join(root, name, "action")
+              state = os.path.join(root, name, "state")
+              os.makedirs(action_root)
+              os.makedirs(state)
+              env = {"RUNNER_TEMP": os.path.join(root, name), "MLA_ACTION_ROOT": action_root, "MLA_STATE_DIR": state}
+              return home, env, state
+
+
+          try:
+              # 1. A timed-out build: cargo, its child and its grandchild must all be stopped.
+              marker = os.path.join(root, "tree")
+              home, env, state = setup("timeout", (
+                  "sleep 3607 &\necho $! > %(m)s.child\n"
+                  "( sleep 3607 & echo $! > %(m)s.grandchild; wait ) &\n"
+                  "echo $$ > %(m)s.cargo\nwait\n") % {"m": marker})
+              mla.BUILD_TIMEOUT_SECONDS = 2
+              started = time.monotonic()
+              try:
+                  mla.build(env, home=home)
+              except mla.ActionError as error:
+                  message = str(error)
+              else:
+                  fail("a timed-out build did not raise an error")
+              elapsed = time.monotonic() - started
+              if "exceeded its time limit" not in message:
+                  fail("unexpected timeout message: " + message)
+              if elapsed > 30:
+                  fail("the timeout took too long (%.1f s)" % elapsed)
+              for name in ("cargo", "child", "grandchild"):
+                  with open("%s.%s" % (marker, name)) as handle:
+                      pids[name] = int(handle.read().split()[0])
+              deadline = time.monotonic() + 5
+              while any(alive(pid) for pid in pids.values()) and time.monotonic() < deadline:
+                  time.sleep(0.05)
+              still = [name for name, pid in pids.items() if alive(pid)]
+              if still:
+                  fail("processes still running after the timeout: " + ", ".join(still))
+              try:
+                  os.waitpid(-1, os.WNOHANG)
+              except ChildProcessError:
+                  pass
+              else:
+                  fail("an unreaped child process was left behind")
+              if os.path.exists(os.path.join(state, "binary-path.txt")):
+                  fail("a timed-out build left a binary path")
+              print("timeout: error raised after %.1f s; cargo, child and grandchild stopped; script reaped" % elapsed)
+
+              # 2. The build runs in its own session and process group.
+              home, env, state = setup("group", "awk '{print $5, $6}' /proc/$$/stat > %s.groups\n" % marker)
+              mla.BUILD_TIMEOUT_SECONDS = 60
+              if mla.build(env, home=home) != 0:
+                  fail("the group probe build did not finish")
+              with open(marker + ".groups") as handle:
+                  pgrp, session = map(int, handle.read().split())
+              if pgrp == os.getpgid(0) or session == os.getsid(0):
+                  fail("the build shares this process's group or session")
+              print("group: build ran in its own process group and session")
+
+              # 3. Normal completion and exit codes are unchanged.
+              for code in (0, 1, 101, 127):
+                  home, env, state = setup("exit%d" % code, "exit %d\n" % code)
+                  mla.BUILD_TIMEOUT_SECONDS = 60
+                  got = mla.build(env, home=home)
+                  wrote = os.path.exists(os.path.join(state, "binary-path.txt"))
+                  if got != code or wrote != (code == 0):
+                      fail("exit code %d: returned %r, binary path written: %r" % (code, got, wrote))
+              print("exit codes 0, 1, 101, 127 returned exactly; binary path written only on success")
+          finally:
+              for pid in pids.values():
+                  try:
+                      os.kill(pid, 9)
+                  except OSError:
+                      pass
+              shutil.rmtree(root, ignore_errors=True)
+          print("F-08 trial passed")
+          PY
+          if pgrep -f "sleep 3607" > /dev/null; then
+            echo "::error title=Trial::a fake build process is still running"
+            exit 1
+          fi
+          echo "No fake build process is left running."
+
       - name: Record what was tested
         if: always()
         run: |
