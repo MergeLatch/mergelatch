@@ -159,6 +159,9 @@ jobs:
           CLEAN_REVISION: ${{ steps.clean.outputs.scanned-revision }}
           CLEAN_SOURCE: ${{ steps.clean.outputs.scanner-source }}
           CLEAN_PINNED: ${{ steps.clean.outputs.action-pinned }}
+          CLEAN_ACTION_REVISION: ${{ steps.clean.outputs.action-revision }}
+          LOADER_REVISION_CHECK: ${{ steps.loader.outputs.revision-check }}
+          LOADER_SOURCE: ${{ steps.loader.outputs.scanner-source }}
           EXPECTED_MERGE: ${{ github.sha }}
           FINDINGS_STATUS: ${{ steps.findings.outputs.status }}
           FINDINGS_COUNT: ${{ steps.findings.outputs.findings-count }}
@@ -181,6 +184,10 @@ jobs:
           # Loaded from the workspace, so it must say it is not an independent release.
           [ "${CLEAN_SOURCE}" = workspace ] || fail "scanner source was not reported as the workspace"
           [ "${CLEAN_PINNED}" = false ] || fail "local Action was reported as pinned"
+          [ -z "${CLEAN_ACTION_REVISION}" ] || fail "a local Action reported a pinned revision"
+          # An early error must not claim a revision comparison or a scanner source it never made.
+          [ "${LOADER_REVISION_CHECK}" = not-checked ] || fail "an early error did not report revision-check not-checked"
+          [ "${LOADER_SOURCE}" = unknown ] || fail "an early error did not report scanner-source unknown"
           [ "${FINDINGS_STATUS}" = findings ] || fail "write-all fixture did not produce findings"
           [ "${FINDINGS_COUNT}" = 1 ] || fail "unexpected finding count"
           [ "${FINDINGS_EXIT}" = 1 ] || fail "scanner exit code was not preserved"

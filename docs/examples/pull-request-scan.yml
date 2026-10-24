@@ -1,14 +1,24 @@
-# EXAMPLE ONLY. NOT RUNNABLE YET.
+# EXAMPLE FOR AN ADVISORY TRIAL. NOT A RELEASE, NOT A MERGE GATE.
 #
-# This shows how a public repository could run the MergeLatch advisory scan on
-# pull requests once the Action has been reviewed, merged, and released. The
-# value of `uses:` below is a placeholder: no reviewed MergeLatch commit exists
-# yet, so there is no real SHA to pin. Do not replace it with a branch name or a
-# tag. After a release, replace REPLACE_WITH_REVIEWED_40_CHARACTER_COMMIT_SHA
-# with the full commit SHA of that reviewed release and nothing else.
+# The commit named in `uses:` below is the trial-tested commit:
+#
+#   - Verified source commit: 0d3ef392b1f18f264ea96d2d8f4796eead4857cc, the
+#     merge commit of the reviewed Action (pull request #7) on main.
+#   - Trial-tested: GitHub downloaded exactly that commit, separately from the
+#     checkout being scanned, and ran it in this repository's pull request
+#     trial (.github/workflows/action-trial.yml), on a GitHub-hosted runner.
+#   - Published release: none. MergeLatch has not published a release, and a
+#     commit that can be referenced by SHA is not thereby an official release.
+#
+# That commit does not yet report which commit it was loaded from in its job
+# summary (a later commit does). It has been tried in this repository only, not
+# in a separate consumer repository. Update the SHA only by reviewing a newer
+# commit and replacing the whole 40-character value, never by following a
+# branch or tag.
 #
 # This scan is advisory. A pull request can change this workflow file, so the
-# result is not a merge gate. See docs/ACTION.md.
+# result is not a merge gate and must not be a required check. See
+# docs/ACTION.md.
 name: MergeLatch advisory scan
 
 on:
@@ -37,7 +47,7 @@ jobs:
 
       - name: MergeLatch advisory scan
         id: mergelatch
-        uses: MergeLatch/mergelatch@REPLACE_WITH_REVIEWED_40_CHARACTER_COMMIT_SHA
+        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
         # with:
         #   scan-directory: .
 

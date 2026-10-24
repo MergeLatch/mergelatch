@@ -31,7 +31,7 @@ outputs:
     description: The scanner's own exit code (0 clean, 1 findings, 2 incomplete, 3 error; other values mean it failed).
     value: ${{ steps.report.outputs.scanner-exit-code }}
   revision-check:
-    description: matches-merge, matches-head, mismatch, unavailable, or not-applicable.
+    description: matches-merge, matches-head, mismatch, unavailable, not-applicable, or not-checked.
     value: ${{ steps.report.outputs.revision-check }}
   scanned-revision:
     description: Commit recorded by the checkout that was scanned. Empty when unavailable.
@@ -45,12 +45,18 @@ outputs:
   scanner-source:
     description: >-
       action-checkout when the scanner was built from the Action's own
-      checkout, or workspace when the Action was loaded from the scanned
-      workspace itself (a local Action, not an independent release).
+      checkout, workspace when the Action was loaded from the scanned
+      workspace itself (a local Action, not an independent release), or
+      unknown when the preparation step did not finish.
     value: ${{ steps.report.outputs.scanner-source }}
   action-pinned:
     description: 'true when the Action was referenced by a full 40-character commit SHA.'
     value: ${{ steps.report.outputs.action-pinned }}
+  action-revision:
+    description: >-
+      The full commit SHA the Action was loaded from, as reported by the
+      runner. Empty when the Action was not referenced by a full SHA.
+    value: ${{ steps.report.outputs.action-revision }}
   ignored-environment-count:
     description: >-
       Number of inherited build settings (for example CARGO_HOME or BASH_ENV)

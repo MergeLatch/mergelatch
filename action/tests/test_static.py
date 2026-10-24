@@ -15,6 +15,8 @@ from helpers import REPO_ROOT, SHA_ACTION, SHA_MERGE, Workspace, finding, github
 
 WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
 EXAMPLE = REPO_ROOT / "docs" / "examples" / "pull-request-scan.yml"
+# The one MergeLatch commit that has been trial-tested as a SHA-pinned Action.
+TRIAL_TESTED_SHA = "0d3ef392b1f18f264ea96d2d8f4796eead4857cc"
 ACTION_YML = (REPO_ROOT / "action.yml").read_text()
 
 ATTACKER_FIELDS = re.compile(
@@ -127,10 +129,6 @@ class Workflows(unittest.TestCase):
                 value = match.group(1)
                 if value == "./":
                     continue
-                if path == EXAMPLE and value.startswith("MergeLatch/mergelatch@"):
-                    # The placeholder must be obviously not a real reference.
-                    self.assertEqual(value, "MergeLatch/mergelatch@REPLACE_WITH_REVIEWED_40_CHARACTER_COMMIT_SHA")
-                    continue
                 self.assertRegex(value, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$", (path.name, value))
 
     def test_every_checkout_drops_credentials(self):
@@ -160,24 +158,34 @@ class Workflows(unittest.TestCase):
             if path.name != "rust.yml":
                 self.assertNotIn("fmt, clippy, test", path.read_text(), path.name)
 
-    def test_the_example_pins_a_checkout_and_marks_itself_not_runnable(self):
+    def test_the_example_names_the_trial_tested_commit_and_is_not_presented_as_a_release(self):
         text = EXAMPLE.read_text()
-        self.assertIn("NOT RUNNABLE YET", text)
+        self.assertIn("uses: MergeLatch/mergelatch@%s\n" % TRIAL_TESTED_SHA, text)
+        self.assertIn("NOT A RELEASE, NOT A MERGE GATE", text)
+        self.assertIn("Published release: none", text)
+        self.assertNotIn("REPLACE_WITH", text)
         self.assertNotRegex(text, r"MergeLatch/mergelatch@(main|master|v\d)")
         self.assertIn("runs-on: ubuntu-24.04", text)
+
+    def test_the_trial_workflow_loads_the_action_by_sha_and_never_from_the_checkout(self):
+        trial = (REPO_ROOT / ".github" / "workflows" / "action-trial.yml").read_text()
+        uses = re.findall(r"(?m)^\s+uses: (MergeLatch/mergelatch\S*|\./\S*)$", trial)
+        self.assertGreaterEqual(len(uses), 8)
+        self.assertEqual(set(uses), {"MergeLatch/mergelatch@%s" % TRIAL_TESTED_SHA})
+        self.assertIn("ACTION_SHA: %s" % TRIAL_TESTED_SHA, trial)
 
     def test_the_example_scans_the_merge_commit_unless_told_otherwise(self):
         text = uncommented(EXAMPLE.read_text())
         self.assertNotIn("ref:", text)
 
 
-class PlaceholdersAreNotRealShas(unittest.TestCase):
-    def test_no_made_up_future_action_sha_appears_in_the_docs(self):
+class OnlyTheTrialTestedShaIsNamed(unittest.TestCase):
+    def test_no_other_made_up_action_sha_appears_in_the_docs(self):
         for path in (REPO_ROOT / "README.md", REPO_ROOT / "docs" / "ACTION.md", EXAMPLE):
             if not path.exists():
                 continue
             for sha in re.findall(r"MergeLatch/mergelatch@([0-9a-f]{40})", path.read_text()):
-                self.fail("%s names a MergeLatch commit that cannot exist yet: %s" % (path.name, sha))
+                self.assertEqual(sha, TRIAL_TESTED_SHA, "%s names a MergeLatch commit that was never trial-tested" % path.name)
 
 
 if __name__ == "__main__":
