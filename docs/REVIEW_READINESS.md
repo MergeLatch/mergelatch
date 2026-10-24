@@ -173,6 +173,16 @@ D-2 fail-closed revision evidence for the **new** pinned Action implementation `
 
 The D-2 logs and test assertions were inspected; the rendered job summaries were not separately viewed in a browser.
 
+### F-08 SHA-pinned GitHub verification (`c5296cef5fd3ffc36f1b8f0649e6491050606275`)
+
+| What | Run | Result |
+| --- | --- | --- |
+| Source pinned Action in merged PR #22 | [40125146676](https://github.com/MergeLatch/mergelatch/actions/runs/40125146676) | **Success**. SHA-pinned download and helper hash verified; two-second fake Cargo timeout stopped child and grandchild and reaped the script; normal exit codes, early-error cleanup, and D-2 tests passed |
+| External consumer in merged consumer PR #8 | [40126418768](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40126418768) | **Success**. Same pinned SHA and hash; fake timeout and early-failure cleanup probes, and D-2 negative tests passed |
+| Failed consumer first attempt | [40126234617](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40126234617) | **Failed test harness:** copied fake PID marker used `$` instead of `$$`. Corrected by consumer commit `dab002e`, then the final run above passed |
+| Rendered summaries, F-08 fork and independent human review | Not visually inspected / not performed / pending | These are maintainer-led verification results, not release or enforcement approval |
+
+
 The checks for the review-readiness pull request itself appear on that pull request and are reported with it; they run the implementation as `uses: ./` and are therefore not tests of a pinned Action.
 
 ### Local checks (2026-10-24, this machine, Linux x86-64, Rust 1.99.1)
@@ -222,7 +232,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 | F-05 | Design limitation | job composition | A prior same-job step running pull request code can alter state files, the target directory, `GITHUB_ENV`, `GITHUB_PATH`, or the runner's Rust installation | Medium if misused | Not reproduced this phase | Documented: run before any such step |
 | F-06 | Accepted risk | `build.sh`, `Cargo.lock` | The build runs the code of 13 build scripts and proc-macros from crates.io and downloads a toolchain, with no verification beyond rustup and cargo's own | Medium (supply chain) | n/a | Reviewer decision D-4 |
 | F-07 | Unverified hypothesis | helper start-up | Inherited variables other than those listed (for example glibc tunables) could affect the already-running Python | Low | No | Needs workflow-author control; documented as unknown |
-| F-08 | **Confirmed behavior** (was an unverified hypothesis) | `build()` | On the 1,500 s build timeout only the direct `bash` child was killed; `cargo`/`rustc` and other descendants kept running | Low | Yes, with fake tools and a 2 s timeout | The step already failed closed. **Fixed on branch `fix/action-build-timeout-process-group`** (process-group kill); not independently reviewed, not released, not yet verified as a pinned Action |
+| F-08 | **Confirmed behavior** (was an unverified hypothesis) | `build()` | On the 1,500 s build timeout only the direct `bash` child was killed; `cargo`/`rustc` and other descendants kept running | Low | Yes, with fake tools and a 2 s timeout | The step already failed closed. **Fixed and merged at `c5296cef5fd3ffc36f1b8f0649e6491050606275` in PR #21; verified by pinned source (40125146676) and consumer (40126418768) GitHub runs; not independently reviewed or released** |
 | F-09 | Confirmed behavior | `crates/cli/src/main.rs` | Errors writing the report to stdout are ignored; exit code still reflects the scan | Informational | Yes | Documented; the Action rejects a truncated report |
 | F-10 | Limitation | scanner deadline | The 30 s limit is detected, not enforced mid-operation; 300 s helper timeout bounds it | Low | Probed, not proven | Documented |
 | F-11 | Limitation | escaping | Look-alike characters can mislead a reader | Low | n/a | Documented |
@@ -263,7 +273,7 @@ See the table. F-04 and F-05 are the main reasons the Action must not be used as
 - **Attacker capability required:** none from a contributor: the build uses only the Action's own pinned source and the locked crates. It needs a stalled or hostile toolchain, registry or crate, which is the supply-chain risk in F-06.
 - **Severity:** Low.
 - **Disposition:** fixed in the helper only. The build script now runs in its own session and process group. On timeout the group receives `SIGKILL` before the script is reaped (so the group ID cannot be reused), the script is then reaped, and the existing time-limit error is raised. The build script, arguments, working directory, controlled environment, timeout value and fail-closed behavior are unchanged. Regression tests (fake tools, 1 to 1.5 s timeout) cover cleanup of the child and grandchild, a descendant that ignores `SIGTERM`, reaping, group isolation, exact exit codes, in-time completion and a launch failure. Three of them fail against the previous code.
-- **Remaining limits:** a descendant that deliberately leaves the group (its own `setsid`) is not stopped; the process group is killed with an immediate `SIGKILL`, so nothing gets to clean up; the scanner run (`scan()`) is a single process and was not changed. Status: **implemented on the branch; not independently reviewed; not released; the corrected helper has not run as a pinned Action**, so the targeted re-verification in [RELEASE_PLAN.md](RELEASE_PLAN.md) applies.
+- **Remaining limits:** a descendant that deliberately leaves the group (its own `setsid`) is not stopped; the process group is killed with an immediate `SIGKILL`, so nothing gets to clean up; the scanner run (`scan()`) is a single process and was not changed. Status: **merged in PR #21 at `c5296cef5fd3ffc36f1b8f0649e6491050606275` and SHA-pinned source and consumer trials passed** ([40125146676](https://github.com/MergeLatch/mergelatch/actions/runs/40125146676), [40126418768](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40126418768)). Rendered F-08 job summaries were not separately inspected in a browser; no new F-08 fork trial or independent security sign-off. The eventual release-candidate commit will require targeted re-verification under [RELEASE_PLAN.md](RELEASE_PLAN.md).
 
 ### Decisions for the maintainers and reviewer
 
@@ -295,7 +305,7 @@ A release candidate tag must not be created until all of these are closed:
 1. **Independent human review is recorded** (see [Sign-off](#sign-off)). Currently pending.
 2. **D-1 has independent review.** It is decided, implemented and verified as a pinned Action (see the evidence table), but has had no independent review. A README-only external fork run against the corrected SHA has now passed; it does not cover a contributor modifying the calling workflow.
 3. **A consumer-trial run exists for the exact commit to be tagged,** unless the tag is placed on `afc7e65…` itself (see [RELEASE_PLAN.md](RELEASE_PLAN.md) for why that is not recommended).
-4. **F-05 and F-07 are confirmed or dismissed** by the reviewer (F-08 was confirmed and fixed on a branch; the fix is awaiting review).
+4. **F-05 and F-07 are confirmed or dismissed** by the reviewer (F-08 was confirmed, fixed, merged, and verified in source and consumer SHA-pinned trials; independent review remains pending).
 5. **The reviewer's checklist items below are answered** and any resulting defect is fixed through the private vulnerability process if it is exploitable.
 
 Not blockers, but should be tracked: further D-2 verification if the implementation changes, D-3, D-4, `cargo audit` in CI, and a test of a pull request that edits the workflow.
