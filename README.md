@@ -108,7 +108,8 @@ Each rule's coverage, example finding, remediation, false-positive risks, and un
 
 The repository contains a composite GitHub Action (`action.yml`) that runs the scanner on a checked-out pull request and writes a job summary and outputs. It is **advisory**: it is not a merge gate, a green check does not mean a pull request is safe, and it must not be added as a required check. It scans only the workflow files at the root of the scanned directory with rules ML-GHA-001 to ML-GHA-004. It does not scan source code for malware or the Git diff.
 
-- It supports GitHub-hosted `ubuntu-24.04` runners, `pull_request` triggers, `contents: read`, and no secrets. It refuses `pull_request_target` and `workflow_run`.
+- It supports GitHub-hosted Ubuntu x86-64 runners, `pull_request` triggers, `contents: read`, and no secrets. It enforces the runner and trigger restrictions at run time and refuses `pull_request_target`, `workflow_run`, self-hosted and non-Ubuntu runners, and environments that preload code (`LD_PRELOAD` and similar).
+- Steps do not run under bash, and the scanner is built in an environment assembled from fixed values, so `BASH_ENV`, `CARGO_HOME`, linker and compiler overrides, and rustup settings inherited from the workflow are ignored.
 - The scanner is built from the Action's own, separately checked-out source with a locked build. The pull request content is only passed to it as a directory to read.
 - Results: `clean`, `findings`, `incomplete`, and `error`. Findings and incomplete scans leave the step green but say so prominently in the summary. A scanner failure or an untrustworthy report fails the step.
 - No reviewed commit exists yet, so the example in [docs/examples/pull-request-scan.yml](docs/examples/pull-request-scan.yml) contains a placeholder and is not runnable. A real SHA will be published only after review and a trial.

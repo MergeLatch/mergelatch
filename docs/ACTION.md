@@ -32,12 +32,17 @@ It does **not** scan source code for malware, does not look at the Git diff, doe
 
 How the separation is kept:
 
-- The scanner is built with `cd` into the Action directory first, so `rustup` reads the Action's `rust-toolchain.toml` and `cargo` reads the Action's configuration. Variables that could redirect the toolchain or build (`RUSTUP_TOOLCHAIN`, `RUSTFLAGS`, `RUSTC_WRAPPER`, `CARGO_TARGET_DIR` and similar) are cleared. The build is `--locked`.
+- The scanner is built with `cd` into the Action directory first, so `rustup` reads the Action's `rust-toolchain.toml` and `cargo` reads the Action's configuration. The build is `--locked`.
+- **No step runs under bash.** Every step runs as `/usr/bin/python3 -I` (an absolute path, so a changed `PATH` cannot substitute it). Bash reads `BASH_ENV` before the first line of any script, even with `--noprofile --norc`, so a `BASH_ENV` pointing into the checkout would run before the Action's own code. Python's isolated mode ignores the `PYTHON*` variables and the working directory. The only bash is `build.sh`, started by the helper with `--noprofile --norc` in a fresh environment.
+- **Child processes get an environment built from scratch, not a filtered copy.** The build and the scanner receive only `PATH` (the runner's `~/.cargo/bin` first, then system directories), `HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`, and the few variables the build script needs. `HOME` comes from the account database, not from the `HOME` variable. Nothing else is carried over, so unknown or future Cargo, rustup, compiler, linker, and shell settings (`CARGO_HOME`, `CARGO_TARGET_<triple>_LINKER`, `RUSTC_WRAPPER`, `RUSTUP_DIST_SERVER`, `BASH_ENV`, and so on) cannot reach them. The build also requires `rustup` and `cargo` to be found in `~/.cargo/bin` and fails with a clear error if they are not.
+- The summary lists the names (never the values) of inherited build settings that were present and ignored, and the `ignored-environment-count` output gives their number.
+- **Loader variables are refused.** `LD_PRELOAD`, `LD_LIBRARY_PATH`, other `LD_*` variables, and `GCONV_PATH` make the loader run code in every process, including the Action's own Python, before any of its code runs. They cannot be undone from inside the Action, so the Action stops with an error naming the variable instead of continuing.
 - The scanned directory is only ever an argument to the finished binary. It is validated first: it must be a relative path without `..`, must resolve (after symlinks) inside the workspace, and must exist. A workspace without a `.git` entry is an error, so a forgotten checkout cannot produce an empty "clean" result.
 - The scanner runs with an empty environment (no tokens, no `GITHUB_*` values), from a private state directory, with a time limit and an output size limit.
 - Inputs and GitHub context reach the scripts only through environment variables, never inside a shell command. Pull request titles, bodies, branch names, and file names are not used for anything executable.
 - Everything in the scanner's report is treated as untrusted. It is validated against the report schema (types, enums, counts, and consistency between the status and the lists), then truncated and Markdown/HTML-escaped before it enters the job summary. Control and bidirectional-format characters are shown as `\u{..}`. Nothing from the report is written to the workflow log.
 - The Action refuses to run on `pull_request_target` and `workflow_run`, which give workflows secrets or a write-capable token.
+- **Runner restrictions are enforced, not only documented.** The Action stops with an error unless the runner is Linux (`runner.os`), GitHub-hosted (`runner.environment`), x86-64 (`runner.arch`), and its image reports `ID=ubuntu` in `/etc/os-release`. Self-hosted runners and ARM runners are refused because the scanner's file confinement has only been verified on x86-64 Linux. These values come from the runner context and the image, so they are checked at run time; a self-hosted runner that misreports them is outside what the Action can detect.
 - If the Action is loaded from the scanned workspace itself (`uses: ./`), the summary and the `scanner-source` output say so: in that case the scanner code comes from the pull request and is **not** an independent release. The repository's own smoke test works this way.
 
 ## Inputs
@@ -61,6 +66,7 @@ There is deliberately no input that makes findings fail the job. That would impl
 | `scanner-version`, `ruleset` | What produced the report |
 | `scanner-source` | `action-checkout` or `workspace` |
 | `action-pinned` | `true` only when the Action was referenced by a full 40-character commit SHA |
+| `ignored-environment-count` | How many inherited build settings (for example `CARGO_HOME`, `BASH_ENV`) were present and ignored |
 
 ## What revision is scanned
 
@@ -86,7 +92,7 @@ A green check means only that the job ran. It is never evidence that a pull requ
 
 ## Permissions and supported platforms
 
-The Action needs no token permissions of its own. Use `permissions: contents: read` (the minimum for `actions/checkout`) and no secrets. It supports GitHub-hosted `ubuntu-24.04` runners only, because the scanner's race-resistant file access is verified only on Linux. Other runners are not supported and the scanner refuses to run on other platforms.
+The Action needs no token permissions of its own. Use `permissions: contents: read` (the minimum for `actions/checkout`) and no secrets. It supports GitHub-hosted Ubuntu runners on x86-64 only (`ubuntu-24.04` is the one tested), because the scanner's race-resistant file access is verified only there. The Action enforces this at run time and refuses self-hosted, non-Linux, non-Ubuntu, and ARM runners. It never uses the network for anything except downloading the pinned Rust toolchain and the locked crates.
 
 The build downloads the pinned Rust toolchain and the locked crates, which takes a few minutes on a cold runner and needs network access to `static.rust-lang.org` and `crates.io`.
 
@@ -107,10 +113,11 @@ Real enforcement needs a separately trusted workflow or service that the pull re
 
 | Kind | What it covers |
 | --- | --- |
-| Mocked | Report validation, exit-code consistency, truncated and malformed output, large reports, escaping of hostile strings, input validation, scanner invocation with a fake binary, the build script with fake `rustup` and `cargo`, output-writing failures |
+| Mocked | Environment assembly, the build step's calls to fake `rustup` and `cargo` (including their complete environment), report validation, exit-code consistency, truncated and malformed output, large reports, escaping of hostile strings, input validation, scanner invocation with a fake binary, the build script with fake `rustup` and `cargo`, output-writing failures |
+| Real processes, simulated GitHub | Real `python3 -I`, `bash`, `cargo`, `rustup`, and a C compiler: positive controls showing that `BASH_ENV`, a `CARGO_HOME` config, a `CARGO_TARGET_<triple>_LINKER`, and `LD_PRELOAD` do run marker scripts when honored, and builds of a small stand-in workspace showing the same settings are neutralized. The GitHub environment is plain files |
 | Real scanner, simulated GitHub | The same steps against the real `mergelatch` binary on fixtures, including unusual file names, a hostile-build-files fixture, stale revisions, and an invalid target. The GitHub environment is plain files |
 | Static | `action.yml` and every workflow: read-only tokens, no secrets, no privileged triggers, SHA-pinned external Actions, `persist-credentials: false`, no expressions in `run:` text |
-| GitHub-hosted run | `.github/workflows/action-checks.yml` runs the composite Action with `uses: ./` on a hosted runner. This executes the unreviewed implementation and is read-only, with no secrets and no enforcement role. It does not prove that consumers using a released, SHA-pinned Action are protected |
+| GitHub-hosted run | `.github/workflows/action-checks.yml` runs the composite Action with `uses: ./` on a hosted runner, including a first run with hostile `BASH_ENV`, `CARGO_HOME`, linker, wrapper, and rustup settings, a positive-control bash step, and a run with `LD_PRELOAD` that must fail. This executes the unreviewed implementation and is read-only, with no secrets and no enforcement role. It does not prove that consumers using a released, SHA-pinned Action are protected |
 
 The case of a separately checked-out Action directory (`scanner-source: action-checkout`) is covered by the mocked and simulated tests only. Verifying it on GitHub needs a real pinned reference, which does not exist yet.
 
@@ -121,6 +128,10 @@ The case of a separately checked-out Action directory (`scanner-source: action-c
 - The revision check trusts the checkout's `.git` files.
 - Filesystem and platform limits of the scanner (Linux only, residual races) apply. See the threat model.
 - The Python helper, the build, and the downloaded toolchain and crates are part of the trusted computing base.
+- The runner's own Rust installation (`~/.cargo/bin`, `~/.rustup`, and any `config.toml` in `~/.cargo`) and the system Python and bash are trusted. A previous step that runs untrusted code in the same job could modify them or the files the runner uses to carry settings between steps (`GITHUB_ENV`, `GITHUB_PATH`); run this Action before any step that executes pull request code, and do not add such steps to the same job.
+- `LD_*` and `GCONV_PATH` are detected, not neutralized: by the time the Action can see them, the loader has already acted on them. The Action fails closed instead of continuing.
+- Settings are removed by building the child environment from fixed values. Settings that change how the already-running Python behaves, other than `PYTHON*` (ignored by `-I`) and the loader variables above, are not known and are not checked.
+- The runner restrictions rely on the runner context and `/etc/os-release`. They stop honest misconfiguration, not a self-hosted runner built to lie.
 
 ## Release and SHA-pinning process (not yet done)
 
