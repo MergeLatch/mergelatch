@@ -41,6 +41,12 @@ class ActionMetadata(unittest.TestCase):
         self.assertNotRegex(uncommented(ACTION_YML), r"(?m)^\s+shell: (?!/usr/bin/python3 -I \{0\}$)")
         self.assertEqual(len(re.findall(r"(?m)^      shell: /usr/bin/python3 -I \{0\}$", ACTION_YML)), 4)
 
+    def test_build_and_scan_only_run_after_a_successful_preparation(self):
+        # Preparation is where the event is checked; a rejected event must stop here.
+        for step_id in ("build", "scan"):
+            block = re.search(r"(?ms)^      id: %s\n(.*?)^      shell:" % step_id, ACTION_YML).group(1)
+            self.assertIn("steps.prepare.outputs.ok == 'true'", block, step_id)
+
     def test_no_expression_is_ever_placed_in_a_run_command(self):
         runs = re.findall(r"(?m)^      run: \|\n((?:        .*\n)+)", ACTION_YML)
         self.assertEqual(len(runs), 4)

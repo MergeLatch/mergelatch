@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import unittest
 
-from helpers import ACTION_DIR, Workspace, github_env, mla, raw, read_outputs, report, finding
+from helpers import ACTION_DIR, Workspace, github_env, mla, raw, read_outputs, read_summary, report, finding
 
 BUILD_SH = ACTION_DIR / "build.sh"
 
@@ -148,6 +148,65 @@ class Prepare(unittest.TestCase):
     def test_prepare_fails_the_step_if_it_cannot_write_outputs(self):
         env = self.ws.env(GITHUB_OUTPUT=str(self.ws.root / "no-dir" / "out"))
         self.assertEqual(mla.main(["x", "prepare"], env), 1)
+
+
+class RejectedEvent(unittest.TestCase):
+    """An unsupported event, followed through preparation and the report step
+    the way action.yml chains them: build and scan are skipped when preparation
+    says ok=false, and report always runs."""
+
+    EVENTS = (None, "", " ", "pull_request_target", "workflow_run", "push", "schedule", "workflow_dispatch",
+              "repository_dispatch", "issue_comment", "issues", "pull_request_review",
+              "pull_request_review_comment", "merge_group", "workflow_call", "release", "fork",
+              "Pull_Request", "PULL_REQUEST", "pull_request ", " pull_request", "pull_request\n",
+              "pull-request", "pull_request_x", "pull_requests", "unknown_event")
+
+    def follow(self, ws, event):
+        extra = {} if event is None else {"MLA_EVENT_NAME": event}
+        env = ws.env(**extra)
+        if event is None:
+            del env["MLA_EVENT_NAME"]
+        self.assertEqual(mla.main(["x", "prepare"], env), 0)
+        out = read_outputs(ws.tmp)
+        state = pathlib.Path(out["state-dir"])
+        return env, out, state
+
+    def test_a_rejected_event_stops_before_build_and_scan_and_ends_in_error(self):
+        for event in self.EVENTS:
+            with self.subTest(event=event):
+                ws = Workspace()
+                self.addCleanup(ws.cleanup)
+                env, out, state = self.follow(ws, event)
+                self.assertEqual(out["ok"], "false")
+                self.assertNotIn("action-root", out)
+                # action.yml skips build and scan here; scan() is also safe if it were called.
+                env["MLA_STATE_DIR"] = str(state)
+                self.assertEqual(mla.main(["x", "scan"], env), 0)
+                self.assertEqual(sorted(p.name for p in state.iterdir()), ["state.json"])
+                env["MLA_BUILD_OUTCOME"] = ""
+                code = mla.main(["x", "report"], env)
+                result = read_outputs(ws.tmp)
+                self.assertEqual(code, 1)
+                self.assertEqual(result["status"], "error")
+                self.assertEqual((result["findings-count"], result["incomplete-count"]), ("0", "0"))
+                self.assertEqual(result["revision-check"], "not-checked")
+                summary = read_summary(ws.tmp)
+                self.assertIn("only the pull\\_request event", summary)
+                self.assertIn("The job failed on purpose", summary)
+                self.assertNotIn("No findings in the supported checks", summary)
+
+    def test_the_event_value_is_not_stored_in_the_preparation_error(self):
+        ws = Workspace()
+        self.addCleanup(ws.cleanup)
+        _, _, state = self.follow(ws, "SECRET_EVENT_MARKER_42")
+        self.assertNotIn("SECRET_EVENT_MARKER_42", (state / "state.json").read_text())
+
+    def test_the_exact_pull_request_event_still_runs(self):
+        ws = Workspace()
+        self.addCleanup(ws.cleanup)
+        _, out, state = self.follow(ws, "pull_request")
+        self.assertEqual(out["ok"], "true")
+        self.assertIsNone(json.loads((state / "state.json").read_text())["error"])
 
 
 class Scan(unittest.TestCase):
