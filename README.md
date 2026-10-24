@@ -2,7 +2,7 @@
 
 **Protect the contribution before it becomes part of the project.**
 
-> **Project status: early development.** MergeLatch has a working command-line scanner with four detection rules for GitHub Actions workflows (see below). It has not yet published a GitHub Action, desktop application, or installer, and it has no releases. Everything under "Planned" below describes intended features, not capabilities available today.
+> **Project status: early development.** MergeLatch has a working command-line scanner with four narrow detection rules for GitHub Actions workflows, and an advisory GitHub Action built on it (see below). The Action is not a merge gate. There is no published release, no desktop application, and no installer. Everything under "Planned" below describes intended features, not capabilities available today.
 
 MergeLatch is an open-source project for checking security-sensitive changes in Git repositories. It is designed for maintainers reviewing pull requests and developers working with code cloned onto their computers.
 
@@ -191,7 +191,7 @@ Sentinel will need to be running to monitor file changes. If your laptop is off,
 
 ## Planned: protecting pull requests on GitHub
 
-*The Action and its verified installation snippet will be published after implementation and security testing.*
+*An advisory-only Action exists (see [GitHub Action](#github-action-advisory-trial-tested-not-released)). The enforcement workflow below, with an official version-pinned snippet and a required status check, is planned and not available. An official installation snippet will be published only with a release.*
 
 1. Add the official version-pinned MergeLatch workflow to your repository.
 2. Run it against test pull requests, including safe and intentionally suspicious fixtures.
@@ -239,7 +239,7 @@ See [the implementation playbook](docs/BUILD_PLAN.md) for the steps from reposit
 
 ## How to help
 
-The project is in planning. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes and [the threat model](docs/THREAT_MODEL.md) for the risks the design is meant to address. Issue templates and repeatable tests will be added later. Please do not submit real malware samples or secrets to public issues.
+The project is in early development. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes and [the threat model](docs/THREAT_MODEL.md) for the risks the design is meant to address. Issue templates will be added later. Please do not submit real malware samples or secrets to public issues.
 
 ## Security
 
@@ -251,4 +251,4 @@ MergeLatch is licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
-**Current status:** early development; four rules implemented. Installation links, release badges, version numbers, performance claims, and coverage statistics will be added only after they are verified.
+**Current status:** early development; four rules and an advisory Action implemented, no release. Installation links, release badges, version numbers, performance claims, and coverage statistics will be added only after they are verified.

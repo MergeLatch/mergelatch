@@ -1,6 +1,6 @@
 # Contributing to MergeLatch
 
-Thank you for your interest. MergeLatch is in the design and planning stage, so the most useful contributions right now are documentation review, threat-model feedback, and discussion of the [build plan](docs/BUILD_PLAN.md).
+Thank you for your interest. MergeLatch is in early development: a command-line scanner with four narrow rules and an advisory GitHub Action exist, and everything else is planned. The most useful contributions right now are security review of the existing code, documentation review, threat-model feedback, and discussion of the [build plan](docs/BUILD_PLAN.md).
 
 By contributing, you agree that your contributions are licensed under the [Apache License 2.0](LICENSE).
 

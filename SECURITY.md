@@ -1,6 +1,6 @@
 # Security Policy
 
-MergeLatch is in the design and planning stage. It does not yet publish a working scanner, GitHub Action, or installer. This policy covers the repository contents and, later, the released software.
+MergeLatch is in early development. The repository contains a command-line scanner and an advisory GitHub Action. There is no published release or installer. This policy covers the repository contents and, later, the released software.
 
 ## Reporting a vulnerability
 
@@ -14,7 +14,7 @@ You can also reach it from the **Security** tab of the repository by choosing **
 
 ## What to include in a report
 
-- The affected file, component, or version.
+- The affected file, component, or version. For the GitHub Action, give the full 40-character commit SHA you reference.
 - The impact and who could be affected.
 - Steps to reproduce, kept as small as possible.
 - Whether you plan to disclose the issue publicly, and when.
@@ -32,7 +32,7 @@ If you need to share a detection test case, use a harmless, clearly labelled fix
 
 ## Scope
 
-In scope, once the corresponding code exists:
+In scope:
 
 - Flaws in MergeLatch's own code, build, release, and workflow configuration.
 - Ways to make a scan pass, hide a finding, or disable a check without the maintainers' knowledge.
@@ -49,4 +49,4 @@ MergeLatch is maintained by volunteers. There is no service-level commitment. Th
 
 ## Supported versions
 
-No versions have been released. This section will list supported versions once releases exist.
+No versions have been released, so there is no supported-version list. Until a release exists, fixes are made on `main`. Anyone who references the Action by commit SHA must review a newer commit and change the whole SHA to receive a fix; nothing updates automatically.
