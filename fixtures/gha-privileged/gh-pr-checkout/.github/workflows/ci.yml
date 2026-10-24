@@ -1,0 +1,9 @@
+name: CLI checkout
+on: pull_request_target
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          gh pr checkout ${{ github.event.number }}
+          ./scripts/build.sh

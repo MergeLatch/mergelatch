@@ -24,6 +24,10 @@ name = "rules"
 path = "../../tests/core_rules.rs"
 
 [[test]]
+name = "privileged"
+path = "../../tests/core_privileged.rs"
+
+[[test]]
 name = "injection"
 path = "../../tests/core_injection.rs"
 

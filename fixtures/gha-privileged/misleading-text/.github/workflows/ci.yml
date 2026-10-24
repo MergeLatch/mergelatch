@@ -1,0 +1,17 @@
+# on: pull_request_target
+name: "pull_request_target ref: ${{ github.event.pull_request.head.sha }} npm test"
+on: pull_request_target
+env:
+  NOTE: "gh pr checkout 1 && npm test"
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: "uses: actions/checkout with ref head.sha then npm test"
+        run: |
+          # gh pr checkout 5
+          echo "gh pr checkout 5 && npm test"
+          echo 'git fetch origin pull/1/head'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0

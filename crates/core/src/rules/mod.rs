@@ -5,11 +5,14 @@ use serde::Serialize;
 mod injection;
 mod permissions;
 mod pinning;
+mod privileged;
+mod shell;
 mod workflow;
 
 pub use injection::RULE_SCRIPT_INJECTION;
 pub use permissions::RULE_WRITE_ALL;
 pub use pinning::RULE_UNPINNED;
+pub use privileged::RULE_PRIVILEGED_PR_CODE;
 
 use crate::discover::WorkflowFile;
 use crate::yaml::{Node, ParseFailure, parse_document};
@@ -26,7 +29,12 @@ pub struct RuleInfo {
 
 /// The rules in the built-in ruleset, in identifier order.
 pub fn builtin_rules() -> Vec<RuleInfo> {
-    vec![permissions::INFO, pinning::INFO, injection::INFO]
+    vec![
+        permissions::INFO,
+        pinning::INFO,
+        injection::INFO,
+        privileged::INFO,
+    ]
 }
 
 /// Result of analyzing one workflow file.
@@ -86,6 +94,7 @@ pub(crate) fn check_workflow(
     permissions::check(&mut ctx, &wf);
     pinning::check(&mut ctx, &wf);
     injection::check(&mut ctx, &wf);
+    privileged::check(&mut ctx, &wf);
     result
 }
 
