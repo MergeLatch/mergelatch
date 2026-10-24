@@ -4,7 +4,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::discover::discover_workflows;
-use crate::{Report, RulesetInfo, ScanLimits, Target, read_revision};
+use crate::rules::check_workflow;
+use crate::{
+    Incomplete, IncompleteKind, Report, RulesetInfo, ScanLimits, Target, builtin_rules,
+    read_revision,
+};
 
 pub const RULESET_ID: &str = "mergelatch-builtin";
 pub const RULESET_VERSION: &str = "1";
@@ -45,6 +49,21 @@ pub fn scan_directory(root: &Path, limits: &ScanLimits) -> Result<Report, ScanEr
         .map_err(|e| ScanError::InvalidTarget(format!("{}: {e}", root.display())))?;
 
     let discovery = discover_workflows(&root, limits, deadline);
+    let mut findings = Vec::new();
+    let mut incomplete = discovery.incomplete;
+    for file in &discovery.files {
+        if Instant::now() >= deadline {
+            incomplete.push(Incomplete {
+                path: None,
+                kind: IncompleteKind::Timeout,
+                detail: "time limit reached before all workflow files were analyzed".to_string(),
+            });
+            break;
+        }
+        let result = check_workflow(file, limits);
+        findings.extend(result.findings);
+        incomplete.extend(result.incomplete);
+    }
 
     let target = Target {
         path: root.to_string_lossy().into_owned(),
@@ -53,14 +72,14 @@ pub fn scan_directory(root: &Path, limits: &ScanLimits) -> Result<Report, ScanEr
     let ruleset = RulesetInfo {
         id: RULESET_ID.to_string(),
         version: RULESET_VERSION.to_string(),
-        rules: Vec::new(),
+        rules: builtin_rules().iter().map(|r| r.id.to_string()).collect(),
     };
     Ok(Report::assemble(
         ruleset,
         limits,
         target,
         discovery.files.len(),
-        Vec::new(),
-        discovery.incomplete,
+        findings,
+        incomplete,
     ))
 }

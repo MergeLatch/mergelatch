@@ -10,10 +10,6 @@ const WORKFLOWS_DIR: &str = ".github/workflows";
 
 /// A workflow file read as text. Its content is data and is never executed.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the rule engine added in a later commit")
-)]
 pub(crate) struct WorkflowFile {
     /// Path relative to the scan root, using `/` separators.
     pub path: String,

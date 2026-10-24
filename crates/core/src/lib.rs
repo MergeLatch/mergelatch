@@ -7,8 +7,10 @@ mod discover;
 mod limits;
 mod model;
 mod revision;
+mod rules;
 mod scan;
 mod text;
+mod yaml;
 
 pub use limits::ScanLimits;
 pub use model::{
@@ -16,5 +18,6 @@ pub use model::{
     SCHEMA_VERSION, ScanStatus, ScannerInfo, Severity, Summary, Target,
 };
 pub use revision::read_revision;
+pub use rules::{RULE_WRITE_ALL, RuleInfo, builtin_rules};
 pub use scan::{RULESET_ID, RULESET_VERSION, ScanError, scan_directory};
 pub use text::sanitize_text;

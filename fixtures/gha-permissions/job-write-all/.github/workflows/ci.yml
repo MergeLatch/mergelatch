@@ -1,0 +1,14 @@
+name: Release
+on: push
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "fixture only"
+  publish:
+    runs-on: ubuntu-24.04
+    permissions: write-all
+    steps:
+      - run: echo "fixture only"
