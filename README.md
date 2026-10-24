@@ -89,13 +89,29 @@ JSON reports include a `schema_version`, the scanner version, the ruleset identi
 - Only the repository root `.github/workflows` directory is read. Composite actions, reusable workflows in other repositories, and files in subdirectories are not analyzed.
 - YAML merge keys (`<<`) and aliases that point to mappings are not expanded. They make the scan incomplete rather than being ignored.
 - Files with more than one YAML document are reported as incomplete.
-- Symlinks are followed only when they resolve inside the scan root at the time they are checked. Others are reported as incomplete.
+- Symlinks: a relative link is followed only if it stays inside the scan root. A link that leaves the root, an absolute link (even one pointing back inside the root), a dangling link, or a link loop is reported as incomplete and is not read. Directory links such as `.github/workflows` follow the same rule.
 - Default limits: 1 MiB per file, 16 MiB total, 1000 directory entries, 64 levels of YAML nesting, and a 30 second time limit. The limits are not yet configurable from the command line.
 - The time limit is detected, not strictly enforced. It is checked between files and during YAML parsing, but a single blocking read is not interrupted. A scan that finishes after the limit is reported as incomplete, never clean.
-- **Not safe against concurrent modification.** The scanner resolves a path, checks that it is inside the scan root, and then opens it by path. It does not use race-resistant confinement (for example directory handles with no-follow opening), so a process that can modify the scanned tree during a scan could swap a file for a symlink between the check and the read. Only scan trees that untrusted processes cannot write to during the scan, such as a fresh checkout. This must be hardened before MergeLatch is used for enforcement or in Sentinel; see the [threat model](docs/THREAT_MODEL.md#10-known-implementation-gaps).
-- Revision information is read from `.git` without running Git. Worktrees and other layouts where `.git` is not a directory report no revision.
+- **Confined file access, verified on Linux only.** Files are opened relative to a handle on the scan root using `cap-std`, so a symlink, rename, or directory swap made during the scan cannot redirect a read outside the root. See "Filesystem confinement" below for what this does and does not cover. Platforms other than Linux are refused with an error, because confinement has not been verified there.
+- Revision information is read from `.git` files without running Git, through the same confined access. It is what the scanned directory claims, not a verified identity: anyone who controls the directory controls those files. If it cannot be read safely, it is omitted. Worktrees and other layouts where `.git` is not a directory report no revision.
 - Only the local directory contents are analyzed. Pull request metadata and diffs are not.
-- Test coverage was developed on Linux. Windows and macOS are untested.
+- Supported and tested platform: Linux (kernel 7.0 on x86-64 was used for the tests). Windows and macOS return an unsupported-platform error and are untested.
+
+### Filesystem confinement
+
+The scan root is opened once. Every later path is resolved relative to that handle by the operating system (on Linux, `openat2` with `RESOLVE_BENEATH` when the kernel provides it, otherwise a component-by-component walk inside `cap-std`), so it cannot lead outside the root. File type and size are read from the opened handle, files are opened non-blocking so a named pipe cannot stall the scan, and special files are never read. Reads are bounded by the size and total-byte limits.
+
+What the tests demonstrate (on Linux): swapping a workflow file, the `workflows` directory, or `.github` for an outside-root symlink at each step of discovery, including between listing and opening, never reads the outside file; links in `.git` metadata cannot supply a revision from outside; named pipes and devices are not read; and concurrent modification stress runs against full scans never leaked an outside marker. The earlier canonicalize-then-open design is kept as a positive control in the unit tests, which shows it loses the same race.
+
+What this does not cover:
+
+- The path passed on the command line is trusted. It is opened once, and the displayed target path comes from a separate lookup, so it is informational and could differ if that path was changed at that moment.
+- A directory inside the root can be swapped for another directory inside the root during a scan, so a scan can mix files from both. Nothing outside the root is read.
+- Mount points and hard links inside the tree are not detected. A mount or hard link placed inside the root can expose other content to a read.
+- The guarantees rely on the kernel, filesystem, and `cap-std`. The `cap-std` fallback used on kernels without `openat2` was not exercised by these tests.
+- Time limits remain detection only (see above).
+
+Do not rely on MergeLatch as an enforcement gate or in Sentinel until the remaining requirements in the [threat model](docs/THREAT_MODEL.md#10-known-implementation-gaps) are met.
 
 ### Offline behavior and safety
 
