@@ -2,11 +2,114 @@
 
 **Protect the contribution before it becomes part of the project.**
 
-> **Project status: Design and implementation planning.** MergeLatch has not yet published a working scanner, GitHub Action, or desktop installer. The features below describe the intended product, not capabilities available today.
+> **Project status: early development.** MergeLatch has a working command-line scanner with one detection rule (GitHub Actions `permissions: write-all`). It has not yet published a GitHub Action, desktop application, or installer, and it has no releases. Everything under "Planned" below describes intended features, not capabilities available today.
 
 MergeLatch is an open-source project for checking security-sensitive changes in Git repositories. It is designed for maintainers reviewing pull requests and developers working with code cloned onto their computers.
 
 The aim is simple: help people understand what changed, what might be dangerous, and whether a contribution is ready for review or merging.
+
+## What works today
+
+| Capability | Status |
+| --- | --- |
+| `mergelatch scan` CLI with human-readable and JSON output | Implemented |
+| Rule ML-GHA-001: explicit `permissions: write-all` in workflows | Implemented |
+| Local scanning with no network access, hosted service, or AI model | Implemented |
+| GitHub Action, Sentinel desktop app, Agent Guard, dependency and malware checks, merge enforcement | Not implemented |
+
+### Build and run
+
+Requires Rust. The repository pins toolchain 1.99.1 in `rust-toolchain.toml`; `rustup` installs it on request.
+
+```bash
+rustup toolchain install   # installs the pinned toolchain
+cargo build --release
+./target/release/mergelatch scan path/to/checkout
+```
+
+Other commands:
+
+```bash
+mergelatch scan <PATH> --format json   # machine-readable report
+mergelatch rules                       # list built-in rules (add --format json for JSON)
+mergelatch --help
+```
+
+Example, scanning a harmless fixture from this repository:
+
+```text
+$ mergelatch scan fixtures/gha-permissions/workflow-write-all
+MergeLatch 0.1.0 (ruleset mergelatch-builtin 1)
+Target: /path/to/mergelatch/fixtures/gha-permissions/workflow-write-all
+Revision: not available
+Workflow files inspected: 1
+
+Findings (1):
+
+  ML-GHA-001 [medium] .github/workflows/ci.yml:3
+    Workflow grants write-all permissions to GITHUB_TOKEN
+    Location: permissions
+    Evidence: permissions: write-all
+    Why: The workflow sets `permissions: write-all`, which gives the GITHUB_TOKEN write access to every permission scope. Any step that runs compromised or untrusted code can use that access.
+    Fix: Remove `write-all`. Set workflow-level permissions to the minimum needed, for example `contents: read`, and grant individual write scopes only to the jobs that need them.
+
+Result: findings (review the findings above)
+Exit code: 1
+```
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | The scan completed and detected nothing. |
+| 1 | The scan completed and found one or more issues. |
+| 2 | The scan is incomplete: a file could not be read or parsed, or a limit was reached. This is not a pass. |
+| 3 | Error: the target is invalid or the command was used incorrectly. The scan did not run. |
+
+Use the exit code, not the absence of output, to decide whether a scan passed. If a scan has both findings and incomplete inspections, the status is `incomplete` and the findings are still listed.
+
+### Interpreting results
+
+- **clean**: every `.github/workflows/*.yml` and `*.yaml` file was read and parsed, and no rule matched. It does not mean the repository is safe.
+- **findings**: a rule matched. Each finding shows the file, line, YAML location, the matching source line, an explanation, and a suggested fix. A finding is a configuration to review, not proof of malicious intent.
+- **incomplete**: at least one inspection did not finish. The report lists each file and the reason: unreadable, not a regular file, outside the scan root, too large, invalid UTF-8, invalid or unsupported YAML, a resource limit, or a timeout.
+- **error**: the scan could not start.
+
+JSON reports include a `schema_version`, the scanner version, the ruleset identity, the limits in force, the target path, and the Git commit when it can be read from `.git`. They contain no timestamps, so the same input produces the same report.
+
+### Detection coverage
+
+| Rule | Detects |
+| --- | --- |
+| ML-GHA-001 | `permissions: write-all` set at the workflow level or on a job, in `.github/workflows/*.yml` and `*.yaml`. The setting is found by parsing YAML, so comments, strings, block scalars, and unrelated keys named `permissions` (for example an action input) are not flagged. |
+
+### Known limitations
+
+- Only one rule exists. MergeLatch does not detect malicious workflows in general, dangerous triggers such as `pull_request_target`, individual write scopes such as `contents: write`, unpinned actions, script injection, dependency problems, secrets, or malware.
+- Only the repository root `.github/workflows` directory is read. Composite actions, reusable workflows in other repositories, and files in subdirectories are not analyzed.
+- YAML merge keys (`<<`) and aliases that point to mappings are not expanded. They make the scan incomplete rather than being ignored.
+- Files with more than one YAML document are reported as incomplete.
+- Symlinks are followed only when they resolve inside the scan root at the time they are checked. Others are reported as incomplete.
+- Default limits: 1 MiB per file, 16 MiB total, 1000 directory entries, 64 levels of YAML nesting, and a 30 second time limit. The limits are not yet configurable from the command line.
+- The time limit is detected, not strictly enforced. It is checked between files and during YAML parsing, but a single blocking read is not interrupted. A scan that finishes after the limit is reported as incomplete, never clean.
+- **Not safe against concurrent modification.** The scanner resolves a path, checks that it is inside the scan root, and then opens it by path. It does not use race-resistant confinement (for example directory handles with no-follow opening), so a process that can modify the scanned tree during a scan could swap a file for a symlink between the check and the read. Only scan trees that untrusted processes cannot write to during the scan, such as a fresh checkout. This must be hardened before MergeLatch is used for enforcement or in Sentinel; see the [threat model](docs/THREAT_MODEL.md#10-known-implementation-gaps).
+- Revision information is read from `.git` without running Git. Worktrees and other layouts where `.git` is not a directory report no revision.
+- Only the local directory contents are analyzed. Pull request metadata and diffs are not.
+- Test coverage was developed on Linux. Windows and macOS are untested.
+
+### Offline behavior and safety
+
+The scanner makes no network requests, needs no account, and does not use an AI model. It reads files as text, never executes scanned content, and does not run Git, so hooks, scripts, and repository configuration in the scanned directory do not run. Text taken from scanned files is escaped before display so it cannot inject terminal control sequences. Automated tests check these properties against inert fixtures; see [the threat model](docs/THREAT_MODEL.md) for the broader design goals.
+
+### Tests and checks
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+The test suites live in `crates/*/src` (unit tests) and `tests/` (integration tests). Fixtures in `fixtures/` are harmless text files and are only read, never run. The pull request workflow `.github/workflows/rust.yml` runs the same three commands with a read-only token. That workflow runs contributed code and is not a security gate.
 
 ## Who is it for?
 
@@ -64,9 +167,9 @@ Sentinel will need to be running to monitor file changes. If your laptop is off,
 
 **Important:** A security scan passing does not mean a pull request is correct or completely safe. A scan is not a substitute for tests or human review. Automated merging will be opt-in, and security-sensitive changes should require human approval.
 
-## Planned: local CLI
+## Local CLI
 
-The final CLI will support operations such as scanning a directory, scanning a Git diff, listing enabled rules, and exporting machine-readable findings. Exact command syntax will be documented and tested before publication. We do not publish placeholder commands as if they already work.
+The first CLI is described under [What works today](#what-works-today). Planned additions include scanning a Git diff and more detection rules. Commands are documented here only after they are implemented and tested.
 
 ## How findings will work
 
@@ -113,4 +216,4 @@ MergeLatch is licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
-**Current status:** proposal and build plan only. Installation links, release badges, version numbers, performance claims, and coverage statistics will be added only after they are verified.
+**Current status:** early development; one rule implemented. Installation links, release badges, version numbers, performance claims, and coverage statistics will be added only after they are verified.

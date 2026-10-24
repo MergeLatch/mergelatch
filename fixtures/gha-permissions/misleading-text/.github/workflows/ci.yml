@@ -1,0 +1,21 @@
+# permissions: write-all
+name: "permissions: write-all"
+on: pull_request
+permissions:
+  contents: read
+env:
+  NOTE: "permissions: write-all"
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Print text
+        run: 'echo "permissions: write-all"'
+      - name: Print block
+        run: |
+          echo start
+          permissions: write-all
+      - name: Action input named permissions
+        uses: example/not-a-real-action@v1
+        with:
+          permissions: write-all
