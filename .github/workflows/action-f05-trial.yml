@@ -1,0 +1,316 @@
+name: Action F-05 trial (same-job interference)
+
+# A harmless, controlled reproduction of audit finding F-05: what a step that
+# ran EARLIER IN THE SAME JOB can do to the MergeLatch advisory Action.
+#
+# The "earlier step" below is written by this repository's maintainers and only
+# touches this job's own runner, which is discarded afterwards. No pull request
+# code is executed: the pull request is checked out and its workflow files are
+# read as data by the scanner, as in the other trials. The Action is loaded by
+# full commit SHA, never from the checkout.
+#
+# This is a CHARACTERIZATION, not a defence. The job passes when the behaviour
+# recorded in docs/REVIEW_READINESS.md (finding F-05) is reproduced, including
+# the cases in which the Action can be made to report a wrong result. It is
+# advisory and is not a security gate or a required check. It runs on
+# pull_request with a read-only token and no secrets.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-f05-trial-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # The commit GitHub downloads and runs as the Action (main after pull request #23).
+  ACTION_SHA: bac74ac9aacfa6068035526e5ed91fe557e34a70
+
+jobs:
+  # What the runner itself lets a step put into GITHUB_ENV. Observation only.
+  runner-semantics:
+    name: What GITHUB_ENV and GITHUB_PATH can set
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Try to set reserved and sensitive variables through GITHUB_ENV
+        run: |
+          set -euo pipefail
+          for name in RUNNER_TEMP RUNNER_OS GITHUB_WORKSPACE GITHUB_OUTPUT GITHUB_ENV GITHUB_PATH \
+                      GITHUB_STEP_SUMMARY GITHUB_SHA GITHUB_EVENT_NAME GITHUB_ACTION_PATH HOME \
+                      NODE_OPTIONS BASH_ENV CARGO_HOME RUSTUP_HOME PYTHONPATH PYTHONHOME MLA_SCAN_TIMEOUT; do
+            printf '%s=attempted-by-f05-trial\n' "${name}" >> "${GITHUB_ENV}"
+          done
+          printf '%s\n' /tmp/f05-path-probe >> "${GITHUB_PATH}"
+
+      - name: Report which of them took effect in the next step
+        run: |
+          set -uo pipefail
+          {
+            echo '### F-05: what a previous step could set through GITHUB_ENV / GITHUB_PATH'
+            echo
+            echo '| Variable | Took effect in the next step |'
+            echo '|---|---|'
+            for name in RUNNER_TEMP RUNNER_OS GITHUB_WORKSPACE GITHUB_OUTPUT GITHUB_ENV GITHUB_PATH \
+                        GITHUB_STEP_SUMMARY GITHUB_SHA GITHUB_EVENT_NAME GITHUB_ACTION_PATH HOME \
+                        NODE_OPTIONS BASH_ENV CARGO_HOME RUSTUP_HOME PYTHONPATH PYTHONHOME MLA_SCAN_TIMEOUT; do
+              if [ "${!name-}" = "attempted-by-f05-trial" ]; then result=yes; else result=no; fi
+              echo "| ${name} | ${result} |"
+            done
+            echo
+            case ":${PATH}:" in *":/tmp/f05-path-probe:"*) echo 'GITHUB_PATH entry present in PATH: yes';; *) echo 'GITHUB_PATH entry present in PATH: no';; esac
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+  # What a job offers an earlier step on a GitHub-hosted runner. Observation only.
+  runner-privileges:
+    name: What an earlier step can reach on the runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Report privileges and ownership (nothing is modified)
+        run: |
+          set -uo pipefail
+          {
+            echo '### F-05: privileges available to any step in the job'
+            echo
+            echo '```'
+            echo "user: $(id)"
+            if sudo -n true 2>/dev/null; then echo 'passwordless sudo: available'; else echo 'passwordless sudo: not available'; fi
+            stat -c '%U:%G %a %n' /usr/bin/python3 /usr/bin/bash "${HOME}/.cargo/bin/cargo" "${HOME}/.cargo/bin/rustup" "${HOME}/.cargo" "${HOME}/.rustup"
+            for path in /usr/bin/python3 "${HOME}/.cargo/bin/cargo" "${HOME}/.rustup" "${RUNNER_TEMP}"; do
+              if [ -w "${path}" ]; then echo "writable by the step user without sudo: ${path}"; else echo "not writable without sudo: ${path}"; fi
+            done
+            echo '```'
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+  # Control: no earlier step. The fixture must be reported as findings.
+  control:
+    name: Control (no earlier step)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Copy a fixture with one real finding into a scan directory
+        run: |
+          set -euo pipefail
+          mkdir scan-victim
+          cp -R fixtures/gha-permissions/workflow-write-all/.github scan-victim/.github
+
+      - name: Scan it
+        id: scan
+        uses: MergeLatch/mergelatch@bac74ac9aacfa6068035526e5ed91fe557e34a70
+        with:
+          scan-directory: scan-victim
+
+      - name: Check the control result
+        env:
+          STATUS: ${{ steps.scan.outputs.status }}
+          COUNT: ${{ steps.scan.outputs.findings-count }}
+          VERSION: ${{ steps.scan.outputs.scanner-version }}
+          REVISION_CHECK: ${{ steps.scan.outputs.revision-check }}
+        run: |
+          set -euo pipefail
+          [ "${STATUS}" = findings ] || { echo "::error title=F-05 control::expected findings, got ${STATUS}"; exit 1; }
+          [ "${COUNT}" = 1 ] || { echo "::error title=F-05 control::expected 1 finding, got ${COUNT}"; exit 1; }
+          [ "${VERSION}" != 0.0.0-forged-by-f05-trial ] || { echo "::error title=F-05 control::unexpected forged version"; exit 1; }
+          [ "${REVISION_CHECK}" = matches-merge ] || { echo "::error title=F-05 control::expected matches-merge, got ${REVISION_CHECK}"; exit 1; }
+
+  # Treatment: the same fixture, with harmless "hostile" earlier steps.
+  tampered:
+    name: Earlier steps tamper with the job
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Copy a fixture with one real finding into a scan directory
+        run: |
+          set -euo pipefail
+          mkdir scan-victim
+          cp -R fixtures/gha-permissions/workflow-write-all/.github scan-victim/.github
+
+      # Earlier step 1: settings, PATH, the Rust installation and the files being scanned.
+      # Every "payload" only writes a marker file under RUNNER_TEMP/f05-lab/markers.
+      - name: Earlier step 1 (simulated), tamper with settings, PATH, the Rust installation and the scanned files
+        run: |
+          set -euo pipefail
+          lab="${RUNNER_TEMP}/f05-lab"
+          mkdir -p "${lab}/bin" "${lab}/markers" "${lab}/pypath" "${lab}/evil-cargo-home"
+
+          # Marker-writing stand-ins for every tool the Action might start by name.
+          for tool in python3 python git cargo rustup rustc; do
+            printf '#!/usr/bin/bash\ntouch "%s/markers/path-%s"\nexit 1\n' "${lab}" "${tool}" > "${lab}/bin/${tool}"
+            chmod +x "${lab}/bin/${tool}"
+          done
+          # Logs every shell that reads it. The job's own bash steps will read it too; what matters is whether the Action does.
+          printf 'printf "%%s\\n" "$0" >> "%s/markers/bash-env.log"\n' "${lab}" > "${lab}/bash_env.sh"
+          printf '#!/usr/bin/bash\ntouch "%s/markers/rustc-wrapper"\nexec "$@"\n' "${lab}" > "${lab}/wrapper.sh"
+          chmod +x "${lab}/wrapper.sh"
+          printf 'open(%s, "w").close()\n' "'${lab}/markers/python-startup'" > "${lab}/pystartup.py"
+          printf 'open(%s, "w").close()\n' "'${lab}/markers/python-sitecustomize'" > "${lab}/pypath/sitecustomize.py"
+          printf 'open(%s, "w").close()\n' "'${lab}/markers/python-usercustomize'" > "${lab}/pypath/usercustomize.py"
+
+          # Settings and PATH, exactly as a step would persist them for later steps.
+          {
+            echo "BASH_ENV=${lab}/bash_env.sh"
+            echo "ENV=${lab}/bash_env.sh"
+            echo "CARGO_HOME=${lab}/evil-cargo-home"
+            echo "RUSTUP_HOME=${lab}/evil-rustup"
+            echo "RUSTC_WRAPPER=${lab}/wrapper.sh"
+            echo "PYTHONPATH=${lab}/pypath"
+            echo "PYTHONSTARTUP=${lab}/pystartup.py"
+            echo "PYTHONHOME=${lab}/no-such-python-home"
+          } >> "${GITHUB_ENV}"
+          echo "${lab}/bin" >> "${GITHUB_PATH}"
+
+          # The runner's own Rust installation: wrap the real cargo. The wrapper records that
+          # it ran and then hands over to the real tool, so the build still succeeds.
+          rm -f "${HOME}/.cargo/bin/cargo"
+          printf '#!/usr/bin/bash\ntouch "%s/markers/cargo-installation-wrapper"\nexec -a cargo "%s/.cargo/bin/rustup" "$@"\n' "${lab}" "${HOME}" > "${HOME}/.cargo/bin/cargo"
+          chmod +x "${HOME}/.cargo/bin/cargo"
+
+          # The files being scanned: remove the only workflow file after the checkout.
+          rm -f scan-victim/.github/workflows/*.yml
+
+      - name: Scan the tampered job (workspace emptied)
+        id: first
+        uses: MergeLatch/mergelatch@bac74ac9aacfa6068035526e5ed91fe557e34a70
+        with:
+          scan-directory: scan-victim
+
+      # Earlier step 2: put the real finding back and start a background process that
+      # outlives the step, as any same-user process can. It waits for the Action's state
+      # directory, then redirects the recorded scanner path to a stand-in that prints a
+      # valid, clean-looking report. It reads and writes only files under RUNNER_TEMP.
+      - name: Earlier step 2 (simulated), restore the file and start a background process
+        run: |
+          set -euo pipefail
+          lab="${RUNNER_TEMP}/f05-lab"
+          cp fixtures/gha-permissions/workflow-write-all/.github/workflows/*.yml scan-victim/.github/workflows/
+          ls scan-victim/.github/workflows/ > "${lab}/restored.txt"
+
+          cat > "${lab}/forged.json" <<'JSON'
+          {"schema_version":1,"status":"clean","scanner":{"name":"mergelatch","version":"0.0.0-forged-by-f05-trial"},"ruleset":{"id":"mergelatch-builtin","version":"1","rules":[]},"limits":{},"target":{"path":"scan-victim","revision":null},"summary":{"files_inspected":1,"findings":0,"incomplete":0},"findings":[],"incomplete":[]}
+          JSON
+          printf '#!/usr/bin/bash\ntouch "%s/markers/forged-scanner-ran"\ncat "%s/forged.json"\nexit 0\n' "${lab}" "${lab}" > "${lab}/forged-scanner"
+          chmod +x "${lab}/forged-scanner"
+
+          # Names are kept out of the process list so that the watcher does not match itself.
+          cat > "${lab}/watcher.sh" <<'WATCH'
+          #!/usr/bin/bash
+          lab="$1"; temp="$2"
+          before="$(ls -d "${temp}"/mergelatch-* 2>/dev/null | sort)"
+          end=$((SECONDS + 900))
+          while [ "${SECONDS}" -lt "${end}" ]; do
+            for dir in "${temp}"/mergelatch-*; do
+              [ -d "${dir}" ] || continue
+              case "${before}" in *"${dir}"*) continue;; esac
+              if [ -s "${dir}/binary-path.txt" ] && [ "$(cat "${dir}/binary-path.txt")" != "${lab}/forged-scanner" ]; then
+                printf '%s\n' "${lab}/forged-scanner" > "${dir}/binary-path.txt"
+                touch "${lab}/markers/watcher-redirected-binary"
+                exit 0
+              fi
+            done
+            sleep 0.02
+          done
+          WATCH
+          chmod +x "${lab}/watcher.sh"
+          nohup setsid "${lab}/watcher.sh" "${lab}" "${RUNNER_TEMP}" > /dev/null 2>&1 < /dev/null &
+          echo "background process started"
+
+      - name: Scan again (a background process of an earlier step is running)
+        id: second
+        uses: MergeLatch/mergelatch@bac74ac9aacfa6068035526e5ed91fe557e34a70
+        with:
+          scan-directory: scan-victim
+
+      - name: Record what happened
+        if: always()
+        env:
+          FIRST_STATUS: ${{ steps.first.outputs.status }}
+          FIRST_FILES: ${{ steps.first.outputs.files-inspected }}
+          FIRST_IGNORED: ${{ steps.first.outputs.ignored-environment-count }}
+          FIRST_REVISION_CHECK: ${{ steps.first.outputs.revision-check }}
+          FIRST_PINNED: ${{ steps.first.outputs.action-pinned }}
+          SECOND_STATUS: ${{ steps.second.outputs.status }}
+          SECOND_COUNT: ${{ steps.second.outputs.findings-count }}
+          SECOND_FILES: ${{ steps.second.outputs.files-inspected }}
+          SECOND_VERSION: ${{ steps.second.outputs.scanner-version }}
+          SECOND_REVISION_CHECK: ${{ steps.second.outputs.revision-check }}
+          SECOND_SOURCE: ${{ steps.second.outputs.scanner-source }}
+          SECOND_PINNED: ${{ steps.second.outputs.action-pinned }}
+          SECOND_ACTION_REVISION: ${{ steps.second.outputs.action-revision }}
+        run: |
+          set -uo pipefail
+          lab="${RUNNER_TEMP}/f05-lab"
+          marker() { if [ -e "${lab}/markers/$1" ]; then echo present; else echo absent; fi; }
+          {
+            echo '### F-05: what the Action did with an earlier step tampering with the job'
+            echo
+            echo '| Observation | Value |'
+            echo '|---|---|'
+            echo "| Scan 1 (settings, PATH, Rust installation changed; workflow file removed): status | ${FIRST_STATUS} |"
+            echo "| Scan 1: workflow files inspected | ${FIRST_FILES} |"
+            echo "| Scan 1: revision check | ${FIRST_REVISION_CHECK} |"
+            echo "| Scan 1: inherited settings reported as ignored | ${FIRST_IGNORED} |"
+            echo "| Scan 2 (real finding restored; background process): status | ${SECOND_STATUS} |"
+            echo "| Scan 2: findings | ${SECOND_COUNT} |"
+            echo "| Scan 2: workflow files inspected | ${SECOND_FILES} |"
+            echo "| Scan 2: scanner version in the report | ${SECOND_VERSION} |"
+            echo "| Scan 2: revision check | ${SECOND_REVISION_CHECK} |"
+            echo "| Scan 2: scanner source / Action pinned / Action revision | ${SECOND_SOURCE} / ${SECOND_PINNED} / ${SECOND_ACTION_REVISION} |"
+            for name in path-python3 path-python path-git path-cargo path-rustup path-rustc \
+                        rustc-wrapper python-startup python-sitecustomize python-usercustomize \
+                        cargo-installation-wrapper watcher-redirected-binary forged-scanner-ran; do
+              echo "| marker ${name} | $(marker "${name}") |"
+            done
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+          fail() { echo "::error title=F-05 trial::$1"; exit 1; }
+          # The settings and PATH attacks are neutralized.
+          for name in path-python3 path-python path-git path-cargo path-rustup path-rustc \
+                      rustc-wrapper python-startup python-sitecustomize python-usercustomize; do
+            [ "$(marker "${name}")" = absent ] || fail "marker ${name} exists: a planted setting or PATH entry ran inside the Action"
+          done
+          # The job's own bash steps read BASH_ENV (the Action never starts bash with an inherited one).
+          if grep -Eq 'mergelatch|build\.sh|/_actions/' "${lab}/markers/bash-env.log" 2>/dev/null; then fail "BASH_ENV was read by a shell started by the Action"; fi
+          [ "${FIRST_IGNORED}" -ge 6 ] || fail "inherited settings were not reported as ignored"
+          [ "${FIRST_PINNED}" = true ] || fail "the first scan was not reported as a pinned Action"
+          # Documented limitations: a modified Rust installation runs, and the result can be rewritten.
+          [ "$(marker cargo-installation-wrapper)" = present ] || fail "the modified cargo did not run in the Action's build (F-05 behaviour changed)"
+          [ "${FIRST_STATUS}" = clean ] || fail "scan 1 of an emptied workspace was not clean (F-05 behaviour changed)"
+          [ "${FIRST_FILES}" = 0 ] || fail "scan 1 inspected files"
+          [ "${FIRST_REVISION_CHECK}" = matches-merge ] || fail "scan 1 revision check changed"
+          [ "$(marker watcher-redirected-binary)" = present ] || fail "the background process did not redirect the scanner (F-05 behaviour changed)"
+          [ "$(marker forged-scanner-ran)" = present ] || fail "the stand-in scanner did not run"
+          [ "${SECOND_STATUS}" = clean ] || fail "scan 2 was not reported clean (F-05 behaviour changed)"
+          [ "${SECOND_VERSION}" = 0.0.0-forged-by-f05-trial ] || fail "scan 2 did not report the stand-in scanner"
+          [ "${SECOND_COUNT}" = 0 ] || fail "scan 2 reported findings"
+          [ "${SECOND_REVISION_CHECK}" = matches-merge ] || fail "scan 2 revision check changed"
+          [ "${SECOND_PINNED}" = true ] || fail "scan 2 was not reported as a pinned Action"
+          [ "${SECOND_ACTION_REVISION}" = "${ACTION_SHA}" ] || fail "scan 2 reported a different Action revision"
+          [ -s "${lab}/restored.txt" ] || fail "the real finding was not restored, so the clean result is not a forgery"
+          echo "F-05 behaviour reproduced"
+
+      - name: Stop anything left running
+        if: always()
+        run: |
+          pkill -f 'f05-lab/watcher.sh' || true
