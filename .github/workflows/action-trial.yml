@@ -306,15 +306,18 @@ jobs:
 
       # F-08. The helper is loaded from the downloaded, hash-verified Action directory and its real
       # build() is run against FAKE rustup, rustc and cargo, with a 2 second timeout. No real build runs.
-      # The fake cargo starts a child and a grandchild (sleep 3607, killed by the test itself in a
-      # finally block) so this checks that a timeout stops the whole process tree. It does not test,
-      # and the Action does not claim to stop, a process that starts its own session.
+      # The fake cargo starts a child and a grandchild (sleep 3607) so this checks that a timeout stops
+      # the whole process tree. It does not test, and the Action does not claim to stop, a process that
+      # starts its own session. The test script cleans up after itself even when it fails early: it finds
+      # its fake processes by their working directory, not only by PIDs it collected.
       - name: Verify the build timeout stops the whole process tree (fake build, pinned helper)
         run: |
           set -euo pipefail
+          fail() { echo "::error title=Trial::$1"; exit 1; }
           action_dir="$(cd "${RUNNER_WORKSPACE}/../_actions/MergeLatch/mergelatch/${ACTION_SHA}" && pwd -P)"
-          ACTION_DIR="${action_dir}" /usr/bin/python3 -I - <<'PY'
-          import hashlib, importlib.util, os, shutil, stat, sys, tempfile, time
+          script="${RUNNER_TEMP}/f08_trial.py"
+          cat > "${script}" <<'PY'
+          import glob, hashlib, importlib.util, os, shutil, signal, stat, subprocess, sys, tempfile, time
 
           action_dir = os.environ["ACTION_DIR"]
           helper_path = os.path.join(action_dir, "action", "mergelatch_action.py")
@@ -326,7 +329,41 @@ jobs:
           spec.loader.exec_module(mla)
 
           root = tempfile.mkdtemp(prefix="f08-")
+          real_root = os.path.realpath(root)
           pids = {}
+
+
+          def reap_everything():
+              """Best-effort cleanup that does not depend on the test having collected any PID.
+
+              Every fake process runs with its working directory inside this test's own temporary
+              directory (the build starts there and its descendants inherit it), so they are found by
+              that, as well as by the marker files the fake cargo writes. A marker PID is only killed
+              if it still looks like one of ours. Nothing here may hide the error being handled."""
+              victims = set(pids.values())
+              for marker in glob.glob(os.path.join(root, "*.cargo")) + glob.glob(os.path.join(root, "*.child"))             + glob.glob(os.path.join(root, "*.grandchild")):
+                  try:
+                      with open(marker) as handle:
+                          pid = int(handle.read().split()[0])
+                      with open("/proc/%d/cmdline" % pid, "rb") as handle:
+                          cmdline = handle.read().replace(b"\x00", b" ").decode("ascii", "replace")
+                      if "sleep 3607" in cmdline or real_root in cmdline:
+                          victims.add(pid)
+                  except (OSError, ValueError, IndexError):
+                      pass
+              for entry in os.listdir("/proc"):
+                  if entry.isdigit() and int(entry) != os.getpid():
+                      try:
+                          if os.path.realpath(os.readlink("/proc/%s/cwd" % entry)).startswith(real_root + os.sep):
+                              victims.add(int(entry))
+                      except OSError:
+                          pass
+              victims.discard(os.getpid())
+              for pid in victims:
+                  try:
+                      os.kill(pid, signal.SIGKILL)
+                  except OSError:
+                      pass
 
 
           def alive(pid):
@@ -363,6 +400,16 @@ jobs:
               env = {"RUNNER_TEMP": os.path.join(root, name), "MLA_ACTION_ROOT": action_root, "MLA_STATE_DIR": state}
               return home, env, state
 
+
+          if os.environ.get("F08_INJECT_EARLY_FAILURE") == "1":
+              # Cleanup probe. Start the real fake process tree, then fail BEFORE any PID has been
+              # collected, as an unexpected error inside build() or an early file error would. The
+              # caller expects this run to fail and then checks that nothing was left running.
+              def start_then_fail(argv, cwd, env, timeout):
+                  subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, start_new_session=True)
+                  time.sleep(1.5)
+                  raise RuntimeError("injected early failure")
+              mla.run_build_process = start_then_fail
 
           try:
               # 1. A timed-out build: cargo, its child and its grandchild must all be stopped.
@@ -424,19 +471,26 @@ jobs:
                       fail("exit code %d: returned %r, binary path written: %r" % (code, got, wrote))
               print("exit codes 0, 1, 101, 127 returned exactly; binary path written only on success")
           finally:
-              for pid in pids.values():
-                  try:
-                      os.kill(pid, 9)
-                  except OSError:
-                      pass
+              try:
+                  reap_everything()
+              except Exception as cleanup_error:  # never hide the error being handled
+                  print("cleanup problem: %r" % (cleanup_error,))
               shutil.rmtree(root, ignore_errors=True)
           print("F-08 trial passed")
           PY
-          if pgrep -f "sleep 3607" > /dev/null; then
-            echo "::error title=Trial::a fake build process is still running"
-            exit 1
-          fi
+          ACTION_DIR="${action_dir}" /usr/bin/python3 -I "${script}"
+          if pgrep -f "sleep 3607" > /dev/null; then fail "a fake build process is still running"; fi
           echo "No fake build process is left running."
+
+          # Cleanup probe: the same script is made to fail BEFORE it has collected any process ID,
+          # after the fake process tree has started. It must fail, and nothing may be left running.
+          if ACTION_DIR="${action_dir}" F08_INJECT_EARLY_FAILURE=1 /usr/bin/python3 -I "${script}" > "${RUNNER_TEMP}/f08_probe.log" 2>&1; then
+            fail "the cleanup probe was expected to fail"
+          fi
+          grep -q "RuntimeError: injected early failure" "${RUNNER_TEMP}/f08_probe.log" || fail "the probe failed for a different reason"
+          sleep 1
+          if pgrep -f "sleep 3607" > /dev/null; then fail "the cleanup probe left a fake build process running"; fi
+          echo "Cleanup probe: failed early as intended and left no fake build process running."
 
       - name: Record what was tested
         if: always()
