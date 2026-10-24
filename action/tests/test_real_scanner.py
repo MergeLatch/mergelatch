@@ -142,6 +142,22 @@ class RealScanner(unittest.TestCase):
         code, out, _ = self.run_steps("sub", MLA_SHA=SHA_MERGE, MLA_PR_HEAD_SHA=SHA_HEAD)
         self.assertEqual((code, out["revision-check"]), (0, "unavailable"))
 
+    def test_a_report_larger_than_the_limit_fails_closed(self):
+        # The scanner does not cap the number of findings, so one workflow of a
+        # few hundred kilobytes can produce a report over the Action's limit.
+        # That must surface as an error, never as findings or as clean.
+        wf = self.ws.workspace / "big" / ".github" / "workflows"
+        wf.mkdir(parents=True)
+        steps = "".join("      - uses: actions/checkout@v%d\n" % i for i in range(7000))
+        (wf / "ci.yml").write_text("on: pull_request\npermissions:\n  contents: read\njobs:\n"
+                                   "  b:\n    runs-on: x\n    steps:\n" + steps)
+        code, out, summary = self.run_steps("big")
+        self.assertEqual((code, out["status"]), (1, "error"))
+        self.assertEqual((out["findings-count"], out["incomplete-count"]), ("0", "0"))
+        self.assertEqual(out["revision-check"], "not-checked")
+        self.assertIn("the scanner output is too large", summary)
+        self.assertIn("The job failed on purpose", summary)
+
     def test_a_secret_like_marker_in_the_scanned_files_does_not_reach_the_summary_or_log(self):
         import contextlib, io
         wf = self.ws.workspace / "s" / ".github" / "workflows"
