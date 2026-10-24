@@ -159,12 +159,10 @@ fn write_all_finding(
         Some(id) => format!("Job `{id}`"),
         None => "The workflow".to_string(),
     };
-    let evidence = file
-        .content
-        .lines()
-        .nth(line.saturating_sub(1))
-        .map(|text| sanitize_text(text.trim(), 200))
-        .unwrap_or_default();
+    // Built from the matched setting only. The source line is not copied, so
+    // comments, other keys, and values on the same line are never disclosed.
+    let key = location.rsplit('.').next().unwrap_or(location);
+    let evidence = format!("{key}: write-all");
     Finding {
         rule_id: RULE_WRITE_ALL.to_string(),
         severity: Severity::Medium,

@@ -159,3 +159,36 @@ fn report_records_scanner_ruleset_and_target() {
     assert_eq!(report.ruleset.rules, [RULE_WRITE_ALL]);
     assert!(Path::new(&report.target.path).is_absolute());
 }
+
+const MARKER: &str = "MERGELATCH_TEST_SECRET";
+
+#[test]
+fn evidence_does_not_copy_unrelated_text_from_the_line() {
+    let report = scan_text(&format!(
+        "on: push\n\
+         env: {{API_KEY: {MARKER}_ENV}}\n\
+         permissions: write-all # token={MARKER}_COMMENT\n\
+         jobs: {{a: {{permissions: write-all, env: {{TOKEN: {MARKER}_FLOW}}}}}}\n"
+    ));
+    assert_eq!(report.findings.len(), 2);
+    let evidence: Vec<_> = report
+        .findings
+        .iter()
+        .map(|f| f.evidence.as_str())
+        .collect();
+    assert_eq!(
+        evidence,
+        ["permissions: write-all", "permissions: write-all"]
+    );
+    let json = report.to_json();
+    assert!(!json.contains(MARKER), "marker leaked into JSON:\n{json}");
+}
+
+#[test]
+fn evidence_still_identifies_the_setting() {
+    let report = scan_fixture("job-write-all");
+    let f = &report.findings[0];
+    assert_eq!(f.evidence, "permissions: write-all");
+    assert_eq!(f.location, "jobs.publish.permissions");
+    assert_eq!(f.line, Some(12));
+}

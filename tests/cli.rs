@@ -171,3 +171,29 @@ fn scan_does_not_modify_the_target() {
     let entries: Vec<_> = fs::read_dir(&wf).unwrap().collect();
     assert_eq!(entries.len(), 1);
 }
+
+#[test]
+fn secret_like_text_near_a_finding_is_not_printed() {
+    let marker = "MERGELATCH_TEST_SECRET";
+    let dir = tempfile::tempdir().unwrap();
+    let wf = dir.path().join(".github/workflows");
+    fs::create_dir_all(&wf).unwrap();
+    fs::write(
+        wf.join("ci.yml"),
+        format!(
+            "on: push\nenv: {{API_KEY: {marker}_ENV}}\npermissions: write-all # token={marker}_COMMENT\njobs: {{a: {{permissions: write-all, env: {{T: {marker}_FLOW}}}}}}\n"
+        ),
+    )
+    .unwrap();
+    let path = dir.path().to_str().unwrap();
+    for args in [vec!["scan", path], vec!["scan", path, "--format", "json"]] {
+        let out = mergelatch(&args);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(
+            !stdout(&out).contains(marker),
+            "marker leaked with {args:?}"
+        );
+        assert!(!stderr(&out).contains(marker));
+        assert!(stdout(&out).contains("permissions: write-all"));
+    }
+}
