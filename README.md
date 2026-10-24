@@ -15,7 +15,7 @@ The aim is simple: help people understand what changed, what might be dangerous,
 | `mergelatch scan` CLI with human-readable and JSON output | Implemented |
 | Rules ML-GHA-001 to ML-GHA-004 for GitHub Actions workflows (see [Detection coverage](#detection-coverage)) | Implemented |
 | Local scanning with no network access, hosted service, or AI model | Implemented |
-| Advisory GitHub Action for pull requests (Linux runners, job summary, not yet released, see [docs/ACTION.md](docs/ACTION.md)) | Implemented in this repository, not released |
+| Advisory GitHub Action for pull requests (Linux runners, job summary; trial-tested by SHA in this repository, not a release, see [docs/ACTION.md](docs/ACTION.md)) | Implemented and merged, not released |
 | Sentinel desktop app, Agent Guard, dependency and malware checks, merge enforcement | Not implemented |
 
 ### Build and run
@@ -104,7 +104,7 @@ Each rule's coverage, example finding, remediation, false-positive risks, and un
 - Only the local directory contents are analyzed. Pull request metadata and diffs are not. The GitHub Action scans whatever the earlier checkout step provides, nothing more.
 - Supported and tested platform: Linux (kernel 7.0 on x86-64 was used for the tests). Windows and macOS return an unsupported-platform error and are untested.
 
-### GitHub Action (advisory, not yet released)
+### GitHub Action (advisory, trial-tested, not released)
 
 The repository contains a composite GitHub Action (`action.yml`) that runs the scanner on a checked-out pull request and writes a job summary and outputs. It is **advisory**: it is not a merge gate, a green check does not mean a pull request is safe, and it must not be added as a required check. It scans only the workflow files at the root of the scanned directory with rules ML-GHA-001 to ML-GHA-004. It does not scan source code for malware or the Git diff.
 
@@ -112,7 +112,7 @@ The repository contains a composite GitHub Action (`action.yml`) that runs the s
 - Steps do not run under bash, and the scanner is built in an environment assembled from fixed values, so `BASH_ENV`, `CARGO_HOME`, linker and compiler overrides, and rustup settings inherited from the workflow are ignored.
 - The scanner is built from the Action's own, separately checked-out source with a locked build. The pull request content is only passed to it as a directory to read.
 - Results: `clean`, `findings`, `incomplete`, and `error`. Findings and incomplete scans leave the step green but say so prominently in the summary. A scanner failure or an untrustworthy report fails the step.
-- No reviewed commit exists yet, so the example in [docs/examples/pull-request-scan.yml](docs/examples/pull-request-scan.yml) contains a placeholder and is not runnable. A real SHA will be published only after review and a trial.
+- The example in [docs/examples/pull-request-scan.yml](docs/examples/pull-request-scan.yml) pins the trial-tested merge commit `0d3ef392b1f18f264ea96d2d8f4796eead4857cc`. That commit has been run as a SHA-pinned Action on GitHub in this repository only, not in a separate consumer repository. It is not a published release, and a commit that can be referenced by SHA is not thereby an official release.
 
 Architecture, inputs and outputs, what revision is scanned, why a pull request can bypass the check, the tests, and the release process are in [docs/ACTION.md](docs/ACTION.md).
 
