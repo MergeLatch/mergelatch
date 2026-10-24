@@ -159,6 +159,94 @@ class RealScanner(unittest.TestCase):
         self.assertIn("the scanner output is too large", summary)
         self.assertIn("The job failed on purpose", summary)
 
+    # --- Revision verification on a pull_request: unverified means error, never clean. ---
+
+    def revision_scan(self, scan_directory=".", head=None, **env):
+        """Runs the steps with the workspace's HEAD set to `head` (None removes it)."""
+        git = self.ws.workspace / ".git"
+        if head is None:
+            (git / "HEAD").unlink(missing_ok=True)
+        else:
+            (git / "HEAD").write_text(head)
+        env.setdefault("MLA_SHA", SHA_MERGE)
+        env.setdefault("MLA_PR_HEAD_SHA", SHA_HEAD)
+        return self.run_steps(scan_directory, **env)
+
+    def test_verified_merge_and_head_checkouts_are_clean_from_the_root_and_a_subdirectory(self):
+        (self.ws.workspace / "sub").mkdir()
+        for scan_dir in (".", "sub"):
+            for head, expected in ((SHA_MERGE + "\n", "matches-merge"), (SHA_HEAD + "\n", "matches-head")):
+                code, out, _ = self.revision_scan(scan_dir, head)
+                self.assertEqual((code, out["status"], out["revision-check"]), (0, "clean", expected), (scan_dir, head))
+                self.assertEqual(out["scanned-revision"], head.strip())
+
+    def test_a_mismatched_revision_fails_from_the_root_and_a_subdirectory(self):
+        (self.ws.workspace / "sub").mkdir()
+        for scan_dir in (".", "sub"):
+            code, out, summary = self.revision_scan(scan_dir, SHA_OTHER + "\n")
+            self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "mismatch"), scan_dir)
+            self.assertIn("neither the expected merge commit", summary)
+
+    def test_a_missing_head_is_an_error_not_a_clean_scan_from_the_root_and_a_subdirectory(self):
+        (self.ws.workspace / "sub").mkdir()
+        for scan_dir in (".", "sub"):
+            code, out, summary = self.revision_scan(scan_dir, None)
+            self.assertEqual((code, out["status"], out["revision-check"], out["scanned-revision"]),
+                             (1, "error", "unavailable", ""), scan_dir)
+            self.assertIn("could not be verified", summary)
+            self.assertIn("The job failed on purpose", summary)
+            self.assertNotIn("No findings in the supported checks", summary)
+
+    def test_findings_and_incomplete_results_are_also_errors_when_the_revision_is_unavailable(self):
+        self.copy_fixture("gha-permissions/workflow-write-all", "f")
+        self.copy_fixture("gha-permissions/malformed", "m")
+        for fixture in ("f", "m"):
+            code, out, _ = self.revision_scan(fixture, None)
+            self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "unavailable"), fixture)
+
+    def test_a_subdirectory_with_its_own_checkout_is_judged_by_that_checkout(self):
+        nested = self.ws.workspace / "sub"
+        (nested / ".git").mkdir(parents=True)
+        (nested / ".git" / "HEAD").write_text(SHA_OTHER + "\n")
+        code, out, _ = self.revision_scan("sub", SHA_MERGE + "\n")
+        self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "mismatch"))
+
+    def test_head_forms_other_than_a_detached_commit_are_unverified(self):
+        (self.ws.workspace / "sub").mkdir()
+        for head in ("ref: refs/heads/main\n", SHA_MERGE.upper() + "\n", SHA_MERGE[:-1] + "\n", "\n", SHA_MERGE + " extra\n",
+                     "x" * 100_000):
+            code, out, _ = self.revision_scan("sub", head)
+            self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "unavailable"), head[:30])
+
+    def test_a_pull_request_without_expected_commits_is_an_error(self):
+        code, out, summary = self.revision_scan(".", SHA_MERGE + "\n", MLA_SHA="", MLA_PR_HEAD_SHA="")
+        self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "not-applicable"))
+        self.assertIn("no expected merge or head commit", summary)
+
+    def test_a_symlinked_head_or_git_directory_is_not_followed(self):
+        (self.ws.workspace / "sub").mkdir()
+        outside = self.ws.root / "outside"
+        outside.mkdir()
+        (outside / "HEAD").write_text(SHA_MERGE + "\n")
+        git = self.ws.workspace / ".git"
+        (git / "HEAD").unlink()
+        (git / "HEAD").symlink_to(outside / "HEAD")
+        code, out, _ = self.run_steps("sub", MLA_SHA=SHA_MERGE, MLA_PR_HEAD_SHA=SHA_HEAD)
+        self.assertEqual((code, out["status"], out["scanned-revision"]), (1, "error", ""))
+        (git / "HEAD").unlink()
+        (git / "HEAD").write_text(SHA_OTHER + "\n")
+        git.rename(self.ws.root / "real-git")
+        git.symlink_to(outside)
+        code, out, _ = self.run_steps("sub", MLA_SHA=SHA_MERGE, MLA_PR_HEAD_SHA=SHA_HEAD)
+        self.assertEqual((code, out["status"], out["scanned-revision"]), (1, "error", ""))
+
+    def test_a_named_pipe_for_head_does_not_block_and_is_unverified(self):
+        (self.ws.workspace / "sub").mkdir()
+        (self.ws.workspace / ".git" / "HEAD").unlink()
+        os.mkfifo(self.ws.workspace / ".git" / "HEAD")
+        code, out, _ = self.run_steps("sub", MLA_SHA=SHA_MERGE, MLA_PR_HEAD_SHA=SHA_HEAD)
+        self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "unavailable"))
+
     def test_a_secret_like_marker_in_the_scanned_files_does_not_reach_the_summary_or_log(self):
         import contextlib, io
         wf = self.ws.workspace / "s" / ".github" / "workflows"
