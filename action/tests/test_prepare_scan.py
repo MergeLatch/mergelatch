@@ -12,7 +12,9 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 from helpers import ACTION_DIR, Workspace, github_env, mla, raw, read_outputs, read_summary, report, finding
 
@@ -415,6 +417,104 @@ class BuildScript(unittest.TestCase):
         make_executable(self.cargo_bin / "cargo", "exit 101\n")
         self.assertNotEqual(self.run_build(), 0)
         self.assertFalse((self.state / "binary-path.txt").exists())
+
+    # --- Build timeout: the whole process tree must be stopped. ---
+
+    def alive(self, pid):
+        try:
+            os.kill(pid, 0)
+            with open("/proc/%d/stat" % pid) as handle:
+                return handle.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return False
+
+    def read_pids(self, *names):
+        pids = {}
+        for name in names:
+            path = pathlib.Path("%s.%s" % (self.ws.root / "pids", name))
+            pids[name] = int(path.read_text().split()[0])
+            self.addCleanup(self.kill_quietly, pids[name])
+        return pids
+
+    @staticmethod
+    def kill_quietly(pid):
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+    def install_process_tree(self, extra=""):
+        """A fake cargo that starts a child and a grandchild which sleep far longer than
+        any test, and records their process IDs."""
+        pids = self.ws.root / "pids"
+        make_executable(self.cargo_bin / "cargo",
+                        "sleep 300 &\necho $! > %(p)s.child\n"
+                        "( sleep 300 & echo $! > %(p)s.grandchild; wait ) &\n"
+                        "%(extra)s"
+                        "echo $$ > %(p)s.cargo\nwait\n" % {"p": pids, "extra": extra})
+
+    def test_a_timed_out_build_stops_cargo_its_child_and_its_grandchild(self):
+        self.install_process_tree()
+        started = time.monotonic()
+        with mock.patch.object(mla, "BUILD_TIMEOUT_SECONDS", 1.5):
+            with self.assertRaises(mla.ActionError) as caught:
+                self.run_build()
+        self.assertIn("exceeded its time limit", str(caught.exception))
+        self.assertLess(time.monotonic() - started, 20)
+        pids = self.read_pids("cargo", "child", "grandchild")
+        deadline = time.monotonic() + 5
+        while any(self.alive(pid) for pid in pids.values()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual({name: self.alive(pid) for name, pid in pids.items()},
+                         {"cargo": False, "child": False, "grandchild": False})
+        self.assertFalse((self.state / "binary-path.txt").exists())
+
+    def test_a_descendant_that_ignores_sigterm_is_still_stopped(self):
+        self.install_process_tree("( trap '' TERM HUP; sleep 300 & echo $! > %s.stubborn; wait ) &\n"
+                                  % (self.ws.root / "pids"))
+        with mock.patch.object(mla, "BUILD_TIMEOUT_SECONDS", 1.5):
+            with self.assertRaises(mla.ActionError):
+                self.run_build()
+        pids = self.read_pids("stubborn")
+        deadline = time.monotonic() + 5
+        while self.alive(pids["stubborn"]) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(self.alive(pids["stubborn"]))
+
+    def test_the_build_script_is_reaped_after_a_timeout(self):
+        self.install_process_tree()
+        with mock.patch.object(mla, "BUILD_TIMEOUT_SECONDS", 1.0):
+            with self.assertRaises(mla.ActionError):
+                self.run_build()
+        # No unreaped child of this process is left behind (no zombie bash).
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(-1, os.WNOHANG)
+
+    def test_the_build_runs_in_its_own_session_and_process_group(self):
+        make_executable(self.cargo_bin / "cargo",
+                        "awk '{print $5, $6}' /proc/$$/stat > %s\n" % (self.ws.root / "groups"))
+        self.assertEqual(self.run_build(), 0)
+        pgrp, session = map(int, (self.ws.root / "groups").read_text().split())
+        self.assertNotEqual(pgrp, os.getpgid(0))
+        self.assertNotEqual(session, os.getsid(0))
+
+    def test_the_exit_code_of_a_finished_build_is_returned_exactly(self):
+        for code in (0, 1, 101, 127):
+            (self.state / "binary-path.txt").unlink(missing_ok=True)
+            make_executable(self.cargo_bin / "cargo", "exit %d\n" % code)
+            self.assertEqual(self.run_build(), code, code)
+            self.assertEqual((self.state / "binary-path.txt").exists(), code == 0, code)
+
+    def test_a_build_that_finishes_in_time_is_unaffected_by_the_timeout(self):
+        with mock.patch.object(mla, "BUILD_TIMEOUT_SECONDS", 60):
+            self.assertEqual(self.run_build(), 0)
+        self.assertTrue((self.state / "binary-path.txt").exists())
+
+    def test_a_build_that_cannot_be_started_is_a_clear_error(self):
+        with mock.patch.object(mla.subprocess, "Popen", side_effect=PermissionError(13, "Permission denied")):
+            with self.assertRaises(mla.ActionError) as caught:
+                self.run_build()
+        self.assertIn("could not be started", str(caught.exception))
 
     def test_missing_trusted_tools_are_a_clear_operational_error(self):
         (self.cargo_bin / "cargo").unlink()
