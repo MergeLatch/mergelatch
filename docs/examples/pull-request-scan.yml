@@ -2,7 +2,7 @@
 #
 # The commit named in `uses:` below is the trial-tested commit:
 #
-#   - Verified source commit: 0d3ef392b1f18f264ea96d2d8f4796eead4857cc, the
+#   - Verified source commit: cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5, the
 #     merge commit of the reviewed Action (pull request #7) on main.
 #   - Trial-tested: GitHub downloaded exactly that commit, separately from the
 #     checkout being scanned, and ran it in this repository's pull request
@@ -10,10 +10,12 @@
 #   - Published release: none. MergeLatch has not published a release, and a
 #     commit that can be referenced by SHA is not thereby an official release.
 #
-# That commit does not yet report which commit it was loaded from in its job
-# summary (a later commit does). It has been tried in this repository only, not
-# in a separate consumer repository. Update the SHA only by reviewing a newer
-# commit and replacing the whole 40-character value, never by following a
+# That commit reports the full SHA it was loaded from in its `action-revision`
+# output, but its rendered job summary shows only a shortened form of it
+# (GitHub shortens owner/repo@sha in ordinary text); a later commit fixes the
+# display. It has been tried in this repository only, not in a separate
+# consumer repository and not from a fork. Update the SHA only by reviewing a
+# newer commit and replacing the whole 40-character value, never by following a
 # branch or tag.
 #
 # This scan is advisory. A pull request can change this workflow file, so the
@@ -47,7 +49,7 @@ jobs:
 
       - name: MergeLatch advisory scan
         id: mergelatch
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
         # with:
         #   scan-directory: .
 

@@ -1,6 +1,6 @@
 # MergeLatch advisory GitHub Action
 
-**Status:** implemented and merged, **advisory only**, and **not released**. Its merge commit `0d3ef392b1f18f264ea96d2d8f4796eead4857cc` has been trial-tested as a SHA-pinned Action in this repository (see [Trial results](#trial-results)). Being referenceable by SHA does not make it an official release, and it has not been tried in a separate consumer repository. This Action is not a merge gate and must not be made a required check (see [Why this is not a merge gate](#why-this-is-not-a-merge-gate)).
+**Status:** implemented and merged, **advisory only**, and **not released**. Its merge commit `cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5` has been run as a SHA-pinned Action on GitHub in this repository (see [Trial results](#trial-results)). Being referenceable by SHA does not make it an official release. It has not been tried in a separate consumer repository or from a fork. This Action is not a merge gate and must not be made a required check (see [Why this is not a merge gate](#why-this-is-not-a-merge-gate)).
 
 ## What it does
 
@@ -123,43 +123,69 @@ The case of a separately checked-out Action directory (`scanner-source: action-c
 
 ## Trial results
 
-`.github/workflows/action-trial.yml` runs the Action as `MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc` (never `uses: ./`) on a GitHub-hosted `ubuntu-24.04` runner, in this repository, on pull request #8 (run 40091227897). The terms used below:
+Terms used in this document:
 
-- **Verified source commit:** `0d3ef392b1f18f264ea96d2d8f4796eead4857cc`, the merge commit of the reviewed Action. It contains `action.yml`, the helper, the Rust source, and `Cargo.lock`.
-- **Trial-tested commit:** the same commit, as GitHub downloaded and ran it.
+- **Verified Action source:** the full commit that was reviewed and merged, here `cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5` (the merge commit of pull request #8). Its `action.yml`, helper, and `Cargo.lock` hashes are listed in `.github/workflows/action-trial.yml`, computed from that commit's files.
+- **Trial-tested revision:** the exact commit GitHub downloaded and ran successfully, here the same commit.
+- **External consumer verification:** a run in a separate repository. **Not done** (see below).
 - **Published release:** none.
 
-What was observed on GitHub (real execution, not mocks):
+`.github/workflows/action-trial.yml` runs the Action as `MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5` (never `uses: ./`) on a GitHub-hosted `ubuntu-24.04` runner, in this repository. Runs: 40095282996 (pull request #9, first run) and 40095501958 (a later commit of the same pull request), both successful. An earlier trial of commit `0d3ef39` (run 40091227897) is described at the end.
+
+What was observed on GitHub (real execution, not mocks). The summary text was read from the rendered job summaries, and the outputs were asserted by the workflow:
 
 | Check | Result |
 | --- | --- |
-| Separate download | The runner log shows `Download action repository 'MergeLatch/mergelatch@0d3ef39…' (SHA:0d3ef39…)`. The trial step finds it at `_actions/MergeLatch/mergelatch/<sha>`, outside the workspace, and the SHA-256 of `action.yml`, the helper, `build.sh`, and `Cargo.lock` match the reviewed files. |
-| Scanner built from that directory | `Compiling mergelatch-core … (/home/runner/work/_actions/MergeLatch/mergelatch/0d3ef39…/crates/core)`, and `rustup` reports the toolchain is "overridden by" that directory's `rust-toolchain.toml`. |
-| Provenance outputs | `scanner-source` = `action-checkout`, `action-pinned` = `true`, scanner version `0.1.0`, ruleset `mergelatch-builtin-1`. |
-| Clean | Scanning the pull request checkout: status `clean`, exit code 0, step succeeded, summary says it is not proof of safety, revision matched the merge commit. |
-| Findings | The `write-all` fixture: 1 finding, exit code 1 preserved, step succeeded, finding listed in the summary. |
-| Incomplete | The malformed fixture: exit code 2 preserved, step succeeded, summary says "Incomplete: this is not a pass". |
-| Error | A missing directory, and a run with no checkout at all: the step failed, status `error`. |
-| Revision | A checkout of the pull request head reported `matches-head`; a checkout of the base commit reported `mismatch` and the step failed. |
-| Hostile input | A fixture of inert build files was scanned as data. With hostile `BASH_ENV`, `CARGO_HOME`, linker, compiler-wrapper, and rustup settings in the step's environment the build still succeeded, the Action reported them as ignored, and no `HOSTILE_*` marker appeared. A control bash step with `BASH_ENV` did run its marker, so the check is meaningful. |
+| Separate download | The log shows `Download action repository 'MergeLatch/mergelatch@cf89c21…' (SHA:cf89c21…)`. The trial finds it at `_actions/MergeLatch/mergelatch/<sha>`, outside the workspace, and the SHA-256 of `action.yml`, the helper, `build.sh`, and `Cargo.lock` match the reviewed files. |
+| Scanner built from that directory | `Compiling mergelatch-core … (/home/runner/work/_actions/MergeLatch/mergelatch/cf89c21…/crates/core)`; rustup reports the toolchain is "overridden by" that directory's `rust-toolchain.toml`. |
+| Provenance outputs | `scanner-source` = `action-checkout`, `action-pinned` = `true`, `action-revision` = the full 40-character SHA, scanner version `0.1.0`, ruleset `mergelatch-builtin-1`. |
+| Clean | Scanning the pull request checkout: `clean`, exit 0, step succeeded, "not proof of safety", revision `matches-merge`. |
+| Findings | The `write-all` fixture: 1 finding, exit 1 preserved, "Findings require review", step succeeded. |
+| Incomplete | The malformed fixture: exit 2 preserved, "Incomplete: this is not a pass", step succeeded. |
+| Errors | A missing directory and a run with no checkout: step failed, status `error`, `revision-check` = `not-checked`. An `LD_PRELOAD` in the environment: step failed, `scanner-source` = `unknown` ("not determined"), `revision-check` = `not-checked`, and `action-revision` still the full SHA. |
+| Revision | A checkout of the pull request head: `matches-head`. A checkout of the base commit: `mismatch`, step failed. |
+| Hostile input | A fixture of inert build files was scanned as data. With hostile `BASH_ENV`, `CARGO_HOME`, linker, compiler-wrapper, and rustup settings in the step environment, the build still succeeded, the Action listed them as ignored, and no `HOSTILE_*` marker appeared. A control bash step with `BASH_ENV` did run its marker, so the check is meaningful. |
 
-Measured on that run (one cold runner): total run 46 s, trial job 41 s, the job with no checkout 5 s. The first Action invocation took 27.0 s to build the scanner on a cold runner, which includes about 8 s to install the pinned toolchain (5 components) and 18.4 s to download and compile the locked crates in release mode; later builds in the same job took about 0.2 s because the target directory was reused. A scan itself took about 0.05 s. These are single measurements, not averages.
+**One gap found, and fixed after this commit.** In the rendered summary of `cf89c21`, the row for the Action revision displays `MergeLatch/mergelatch@cf89c21`: GitHub rewrites `owner/repo@sha` written in ordinary text into a shortened reference. The full SHA is correct in the `action-revision` output and in the trial's own checks, but a reader of the summary does not see it. The trial summary renders both forms side by side: ordinary text shows the shortened `@cf89c21`, a code span shows the full SHA. A later commit puts the row in a code span. Its rendered form can only be confirmed on GitHub by pinning a commit that contains it, which has not been done, so **the displayed-SHA requirement is not yet met by a pinned run**.
 
-Gaps found by reading the real summaries, fixed in a later commit but **not** present in the trial-tested commit:
-
-- The summary said the Action was pinned but did not print the SHA. It now prints `repository@sha` and sets an `action-revision` output.
-- An error before any scan said "no expected revision for this event". It now reports `not-checked`.
-- A run whose preparation failed early described the scanner source as pinned. It now reports `unknown`.
-
-These are verified for the local Action in the smoke test. Verifying them for a pinned Action needs a newer reviewed commit to pin.
+Measured on those runs (each on a fresh cold runner): the first run took 46 s in total, with the trial job 41 s and the no-checkout job 5 s; the second took 39 s in total, with the trial job 32 s and the no-checkout job 5 s. On the first run the first scanner build took 27.3 s on the cold runner (about 8 s to install the pinned toolchain's five components and 18.5 s to download and compile the locked crates in release mode); later builds in the same job took about 0.2 s because the target directory was reused; a scan took about 0.05 s. These are single measurements.
 
 Not verified, and not measured:
 
-- Use from a separate consumer repository. Only this repository has been tried.
-- A pull request from a fork. GitHub's approval policy for workflow runs from forks applies and was not exercised.
-- Behavior when GitHub cannot download the Action (for example an outage). The job would fail at setup before any step runs; this was not simulated.
-- A build that fails on a cold runner (for example if the Rust distribution server is unreachable). The failure path is covered by mocked tests, which report status `error` and fail the step, but was not triggered on GitHub.
+- **A separate consumer repository.** The only repositories checked were this one and the owner's account. One private repository there is described as a disposable test for a different project's Action. It was not designated for MergeLatch and its use was not authorized for this trial, so it was not touched and no repository was created. Separate-consumer testing remains pending.
+- **A pull request from a fork,** including whether GitHub requires approval. Not tried.
+- **GitHub being unable to download the Action.** Not simulated. The job would fail at setup before any step runs.
+- **A cold build failure on GitHub** (for example an unreachable Rust distribution server). Covered only by mocked tests, which report status `error` and fail the step.
 - Network dependencies, from the logs: GitHub (the Action download), the Rust distribution server (the pinned toolchain), and the crates registry (the locked crates).
+
+The earlier trial of commit `0d3ef392b1f18f264ea96d2d8f4796eead4857cc` (run 40091227897, pull request #8) found that the summary did not print the pinned SHA, that an error before any scan said "no expected revision for this event", and that a failed early preparation described the scanner source as pinned. Those are fixed in `cf89c21`, as the table above shows.
+
+## Release candidate review
+
+This is a review of the Action as it stands, not a release. No tag, release page, download, or certification exists. Any version label here is a proposal.
+
+| Item | State |
+| --- | --- |
+| Inputs and outputs | `scan-directory`, `max-findings-in-summary`; outputs listed above. Summary wording is for people and is not a stable interface |
+| Scanner and ruleset identity | Reported as `scanner-version` and `ruleset`; both appear in the summary. Report schema version `1`, validated by the helper |
+| Runners | GitHub-hosted Ubuntu on x86-64, enforced at run time. `ubuntu-24.04` is the one tested |
+| Installation | Pin `MergeLatch/mergelatch@<full 40-character SHA>`; see the example workflow. Tags and branches are not supported and are reported as "NOT a full commit SHA" |
+| Build integrity | `cargo build --locked` from `Cargo.lock` and a pinned `rust-toolchain.toml`. Bit-for-bit reproducibility was not checked. rustup and cargo verify what they download against their own metadata; MergeLatch adds no separate verification of the toolchain or crates |
+| Network dependencies | GitHub, the Rust distribution server, the crates registry. A runner without access to them cannot build the scanner and the step fails with status `error` |
+| License | Apache-2.0, see `LICENSE`; dependencies keep their own licenses |
+| Reporting vulnerabilities | Through GitHub private vulnerability reporting, see `SECURITY.md` |
+| False positives and negatives | See [RULES.md](RULES.md); the Action adds none of its own beyond the revision check |
+| Incomplete and failed scans | `incomplete` keeps the step green but is "not a pass"; a failure to run, build, or parse, or a wrong revision, fails the step |
+| Updating | Review the newer commit, then change the whole SHA in the workflow. Do not follow a branch or tag |
+| Breaking changes | A change to an input or output name or meaning, to the set of statuses, to which statuses fail the step, to the supported runners, or to the permissions required. Summary wording and the order of summary rows are not part of the interface |
+| Proposed first label | `v0.1.0-rc.1` is proposed for a first candidate, only after the open items below are closed. It does not exist |
+
+Open items before a first controlled public release candidate:
+
+1. Merge the summary fix and re-run the pinned trial against the new commit, confirming the full SHA in the rendered summary.
+2. Repeat the verification in a separate, designated, disposable consumer repository.
+3. Exercise a pull request from a fork and record GitHub's approval behavior.
+4. Independent review of the Action, helper, and workflows.
 
 ## Known limitations
 
@@ -178,5 +204,5 @@ Not verified, and not measured:
 1. Independent review of this change, including the helper and the workflows.
 2. Merge. Run the smoke test and a controlled advisory trial in a repository that is not otherwise protected by it.
 3. Cut a release from a reviewed commit and record its **full 40-character SHA**. Verify the SHA against the repository before publishing it.
-4. Consumers pin that SHA and nothing else. The example currently names the trial-tested merge commit, not a release. Updates are made by reviewing a newer commit and changing the whole SHA, never by following a branch or tag.
+4. Consumers pin that SHA and nothing else. The example currently names the trial-tested commit `cf89c21…`, not a release. Updates are made by reviewing a newer commit and changing the whole SHA, never by following a branch or tag.
 5. Optionally extract `action.yml`, `action/`, and the scanner source (or checksummed release binaries) into a separate `mergelatch-action` repository after the above. The extraction must keep `Cargo.lock` and `rust-toolchain.toml` with the source it builds, and must repeat the review and the SHA pinning for the new location. That repository does not exist yet.

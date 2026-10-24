@@ -18,7 +18,7 @@ EXAMPLE = REPO_ROOT / "docs" / "examples" / "pull-request-scan.yml"
 # MergeLatch commits trial-tested as a SHA-pinned Action. The trial workflow names the candidate
 # under test; the example and docs name only a commit whose trial has already passed.
 TRIAL_WORKFLOW_SHA = "cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5"
-TRIAL_TESTED_SHA = "0d3ef392b1f18f264ea96d2d8f4796eead4857cc"
+TRIAL_TESTED_SHA = "cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5"
 ACTION_YML = (REPO_ROOT / "action.yml").read_text()
 
 ATTACKER_FIELDS = re.compile(
