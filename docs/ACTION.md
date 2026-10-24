@@ -41,7 +41,7 @@ How the separation is kept:
 - The scanner runs with an empty environment (no tokens, no `GITHUB_*` values), from a private state directory, with a time limit and an output size limit.
 - Inputs and GitHub context reach the scripts only through environment variables, never inside a shell command. Pull request titles, bodies, branch names, and file names are not used for anything executable.
 - Everything in the scanner's report is treated as untrusted. It is validated against the report schema (types, enums, counts, and consistency between the status and the lists), then truncated and Markdown/HTML-escaped before it enters the job summary. Control and bidirectional-format characters are shown as `\u{..}`. Nothing from the report is written to the workflow log.
-- The Action refuses to run on `pull_request_target` and `workflow_run`, which give workflows secrets or a write-capable token.
+- The Action refuses to run when the event is `pull_request_target` or `workflow_run`, which give workflows secrets or a write-capable token. This is a refusal list of exactly those two names, not a list of allowed events; see [Events](#events).
 - **Runner restrictions are enforced, not only documented.** The Action stops with an error unless the runner is Linux (`runner.os`), GitHub-hosted (`runner.environment`), x86-64 (`runner.arch`), and its image reports `ID=ubuntu` in `/etc/os-release`. Self-hosted runners and ARM runners are refused because the scanner's file confinement has only been verified on x86-64 Linux. These values come from the runner context and the image, so they are checked at run time; a self-hosted runner that misreports them is outside what the Action can detect.
 - If the Action is loaded from the scanned workspace itself (`uses: ./`), the summary and the `scanner-source` output say so: in that case the scanner code comes from the pull request and is **not** an independent release. The repository's own smoke test works this way.
 
@@ -61,12 +61,25 @@ There is deliberately no input that makes findings fail the job. That would impl
 | `status` | `clean`, `findings`, `incomplete`, or `error` |
 | `findings-count`, `incomplete-count`, `files-inspected` | Counts from the report |
 | `scanner-exit-code` | The scanner's own exit code, unchanged (`0` clean, `1` findings, `2` incomplete, `3` error; anything else means it failed) |
-| `revision-check` | `matches-merge`, `matches-head`, `mismatch`, `unavailable`, or `not-applicable` |
+| `revision-check` | `matches-merge`, `matches-head`, `mismatch`, `unavailable`, `not-applicable`, or `not-checked` (the run failed before there was a result to compare) |
 | `scanned-revision` | The commit the checkout recorded, if readable |
 | `scanner-version`, `ruleset` | What produced the report |
-| `scanner-source` | `action-checkout` or `workspace` |
+| `scanner-source` | `action-checkout`, `workspace` (the Action was loaded from the scanned workspace), or `unknown` (the preparation step did not finish) |
 | `action-pinned` | `true` only when the Action was referenced by a full 40-character commit SHA |
+| `action-revision` | The full commit SHA the runner loaded the Action from, or empty when the Action was not referenced by a full SHA |
 | `ignored-environment-count` | How many inherited build settings (for example `CARGO_HOME`, `BASH_ENV`) were present and ignored |
+
+## Events
+
+The Action is designed, documented, and trial-tested for the `pull_request` event. What the helper actually does with each event name was checked by running its `prepare` step on 17 names (and is pinned by `test_privileged_events_are_refused`):
+
+| Event | Behavior |
+| --- | --- |
+| `pull_request` | Runs. The only event with an expected revision, so the only one that can report `matches-merge`, `matches-head`, or `mismatch` |
+| `pull_request_target`, `workflow_run` | Refused with an error before anything is built or scanned |
+| Every other event (for example `push`, `schedule`, `workflow_dispatch`, `issue_comment`, `pull_request_review`, `merge_group`) | **Not refused.** The scan runs, `revision-check` is `not-applicable`, and the summary says there is no expected revision. These events are unsupported and untested |
+
+The refusal is a guard on this Action, not a security boundary. A workflow that runs under a privileged event can check out and execute pull request code with its own steps whether or not this Action refuses to run, and the Action cannot see how the rest of the job is built. The Action itself uses no secrets and starts its children with an environment built from fixed values, so running it under another event does not give the scanner a token. Do not run it on events other than `pull_request`. Whether to turn the refusal list into an allowlist is an open decision recorded in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions). GitHub documents that a reusable workflow sees the caller's event name; that was not tested here.
 
 ## What revision is scanned
 
@@ -74,10 +87,10 @@ Whatever the earlier checkout step put in the directory. With `actions/checkout`
 
 - `matches-merge` or `matches-head`: reported as that one revision. The summary never claims both were scanned.
 - `mismatch`: the checkout is neither (for example a stale or wrong ref). The job **fails** with status `error`.
-- `unavailable`: the scanned directory has no readable `.git` (for example a subdirectory). The scan runs and the summary says the revision could not be checked.
+- `unavailable`: the scanned directory has no readable `.git`. **When `scan-directory` is a subdirectory, this is always the case, because the revision is read from `.git` in the scanned directory itself.** The scan runs, the step stays green, and the summary says the revision could not be checked, so no protection against a wrong checkout applies. Scan the workspace root, or assert `revision-check` in a later step, if that matters to you.
 - `not-applicable`: the event has no expected revision (for example `push`).
 
-The revision comes from `.git` files in the checkout, which are what the checkout claims, not a verified identity.
+The revision comes from `.git` files in the checkout, which are what the checkout claims, not a verified identity. It identifies the commit that was checked out, not the content of the files: a step that changes files after the checkout is not detected, which is another reason to run this Action before any other step that touches the workspace.
 
 ## Meaning of the results and how they appear
 
@@ -210,8 +223,10 @@ Done for `afc7e65…`: the in-repository SHA-pinned verification including the r
 ## Known limitations
 
 - Narrow coverage: four rules on workflow files only. See [RULES.md](RULES.md) for false positives and negatives.
+- **Very large reports fail the step.** The scanner caps neither the number of findings nor the size of its report. The helper rejects reports over 5 MiB, so a workflow of a few hundred kilobytes with thousands of findings (reproduced with 7,000 unpinned steps, about 9.5 MB) produces status `error` and a failed step instead of a list of findings. This is fail-closed and is pinned by a test, but it means such a pull request gets no finding list.
 - Escaping removes markup and control characters but cannot stop look-alike (confusable) characters in file names from misleading a reader.
-- The revision check trusts the checkout's `.git` files.
+- The revision check trusts the checkout's `.git` files, checks a commit and not file content, and does not apply to subdirectory scans or to events other than `pull_request`.
+- The command-line scanner ignores errors writing its report to standard output (for example a full disk) and still returns the scan's exit code, so a redirected report can be truncated while the exit code is correct. The Action detects this because a truncated report fails validation.
 - Filesystem and platform limits of the scanner (Linux only, residual races) apply. See the threat model.
 - The Python helper, the build, and the downloaded toolchain and crates are part of the trusted computing base.
 - The runner's own Rust installation (`~/.cargo/bin`, `~/.rustup`, and any `config.toml` in `~/.cargo`) and the system Python and bash are trusted. A previous step that runs untrusted code in the same job could modify them or the files the runner uses to carry settings between steps (`GITHUB_ENV`, `GITHUB_PATH`); run this Action before any step that executes pull request code, and do not add such steps to the same job.
