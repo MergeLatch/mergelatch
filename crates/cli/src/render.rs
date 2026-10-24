@@ -1,6 +1,7 @@
 use std::fmt::Write;
 
 use mergelatch_core::{Report, RuleInfo, ScanStatus, sanitize_text};
+use serde::Serialize;
 
 /// Process exit codes. `1` and `2` are both non-passing: a gate must not treat
 /// an incomplete scan as success.
@@ -16,6 +17,14 @@ pub fn exit_code(status: ScanStatus) -> i32 {
         ScanStatus::Incomplete => EXIT_INCOMPLETE,
         ScanStatus::Error => EXIT_ERROR,
     }
+}
+
+/// The same lowercase name that the JSON report uses for an enum value.
+fn label<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 pub fn human_report(report: &Report) -> String {
@@ -51,7 +60,7 @@ pub fn human_report(report: &Report) -> String {
                 Some(line) => format!("{}:{line}", f.file),
                 None => f.file.clone(),
             };
-            let _ = writeln!(out, "\n  {} [{:?}] {at}", f.rule_id, f.severity);
+            let _ = writeln!(out, "\n  {} [{}] {at}", f.rule_id, label(&f.severity));
             let _ = writeln!(out, "    {}", f.title);
             let _ = writeln!(out, "    Location: {}", f.location);
             let _ = writeln!(out, "    Evidence: {}", f.evidence);
@@ -69,9 +78,9 @@ pub fn human_report(report: &Report) -> String {
         for gap in &report.incomplete {
             let _ = writeln!(
                 out,
-                "  {}: {:?}: {}",
+                "  {}: {}: {}",
                 gap.path.as_deref().unwrap_or("(scan)"),
-                gap.kind,
+                label(&gap.kind),
                 gap.detail
             );
         }
@@ -96,7 +105,7 @@ pub fn human_report(report: &Report) -> String {
 pub fn human_rules(rules: &[RuleInfo]) -> String {
     let mut out = String::new();
     for rule in rules {
-        let _ = writeln!(out, "{} [{:?}]", rule.id, rule.severity);
+        let _ = writeln!(out, "{} [{}]", rule.id, label(&rule.severity));
         let _ = writeln!(out, "  {}", rule.title);
         let _ = writeln!(out, "  {}", rule.description);
     }
