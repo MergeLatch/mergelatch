@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use serde::Serialize;
 
 use crate::discover::WorkflowFile;
@@ -33,7 +35,11 @@ pub(crate) struct FileResult {
 }
 
 /// Parses `file` as YAML and applies every rule to it.
-pub(crate) fn check_workflow(file: &WorkflowFile, limits: &ScanLimits) -> FileResult {
+pub(crate) fn check_workflow(
+    file: &WorkflowFile,
+    limits: &ScanLimits,
+    deadline: Instant,
+) -> FileResult {
     let mut result = FileResult::default();
     let gap = |kind: IncompleteKind, detail: String| Incomplete {
         path: Some(file.path.clone()),
@@ -41,13 +47,17 @@ pub(crate) fn check_workflow(file: &WorkflowFile, limits: &ScanLimits) -> FileRe
         detail: sanitize_text(&detail, 300),
     };
 
-    let root = match parse_document(&file.content, limits.max_yaml_depth) {
+    let root = match parse_document(&file.content, limits.max_yaml_depth, deadline) {
         Ok(Some(root)) => root,
         Ok(None) => return result,
         Err(failure) => {
             let incomplete = match failure {
                 ParseFailure::Invalid(msg) => gap(IncompleteKind::InvalidYaml, msg),
                 ParseFailure::Unsupported(msg) => gap(IncompleteKind::UnsupportedYaml, msg),
+                ParseFailure::Timeout => gap(
+                    IncompleteKind::Timeout,
+                    "time limit reached while parsing".to_string(),
+                ),
                 ParseFailure::TooDeep(max) => gap(
                     IncompleteKind::LimitExceeded,
                     format!("YAML nesting is deeper than {max} levels"),

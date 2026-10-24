@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::time::Instant;
 
 use yaml_rust2::parser::{Event, Parser};
 use yaml_rust2::scanner::TScalarStyle;
@@ -47,6 +48,8 @@ pub(crate) enum ParseFailure {
     Unsupported(String),
     /// Nesting deeper than the configured limit.
     TooDeep(usize),
+    /// The scan deadline passed while parsing.
+    Timeout,
 }
 
 enum Frame {
@@ -62,8 +65,15 @@ enum Frame {
 /// The text is only parsed. Tags such as `!!python/object` are not
 /// interpreted, so no constructors run. A panic inside the parser is caught
 /// and reported as invalid input.
-pub(crate) fn parse_document(text: &str, max_depth: usize) -> Result<Option<Node>, ParseFailure> {
-    catch_unwind(AssertUnwindSafe(|| parse(text, max_depth))).unwrap_or_else(|_| {
+///
+/// The deadline is checked every [`DEADLINE_CHECK_EVENTS`] parser events. This
+/// is cooperative: a single event that blocks cannot be interrupted.
+pub(crate) fn parse_document(
+    text: &str,
+    max_depth: usize,
+    deadline: Instant,
+) -> Result<Option<Node>, ParseFailure> {
+    catch_unwind(AssertUnwindSafe(|| parse(text, max_depth, deadline))).unwrap_or_else(|_| {
         Err(ParseFailure::Invalid(
             "the YAML parser failed on this input".into(),
         ))
@@ -81,17 +91,25 @@ fn place(node: Node, stack: &mut [Frame], root: &mut Option<Node>) {
     }
 }
 
-fn parse(text: &str, max_depth: usize) -> Result<Option<Node>, ParseFailure> {
+/// Number of parser events between deadline checks.
+const DEADLINE_CHECK_EVENTS: usize = 256;
+
+fn parse(text: &str, max_depth: usize, deadline: Instant) -> Result<Option<Node>, ParseFailure> {
     let mut parser = Parser::new_from_str(text);
     let mut stack: Vec<Frame> = Vec::new();
     let mut root = None;
     let mut documents = 0;
+    let mut events = 0usize;
     let mut scalar_anchors: HashMap<usize, Node> = HashMap::new();
 
     loop {
         let (event, mark) = parser
             .next_token()
             .map_err(|e| ParseFailure::Invalid(e.to_string()))?;
+        events += 1;
+        if events.is_multiple_of(DEADLINE_CHECK_EVENTS) && Instant::now() >= deadline {
+            return Err(ParseFailure::Timeout);
+        }
         match event {
             Event::Nothing | Event::StreamStart | Event::DocumentEnd => {}
             Event::StreamEnd => break,
@@ -158,6 +176,11 @@ fn parse(text: &str, max_depth: usize) -> Result<Option<Node>, ParseFailure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    fn far() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
 
     fn scalar(value: &str, line: usize) -> Node {
         Node::Scalar {
@@ -170,7 +193,9 @@ mod tests {
 
     #[test]
     fn mapping_keeps_scalar_lines() {
-        let node = parse_document("a: 1\nb: two\n", 64).unwrap().unwrap();
+        let node = parse_document("a: 1\nb: two\n", 64, far())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             node,
             Node::Map(vec![
@@ -182,7 +207,7 @@ mod tests {
 
     #[test]
     fn comments_are_not_content() {
-        let node = parse_document("# permissions: write-all\na: 1\n", 64)
+        let node = parse_document("# permissions: write-all\na: 1\n", 64, far())
             .unwrap()
             .unwrap();
         assert_eq!(node, Node::Map(vec![(scalar("a", 2), scalar("1", 2))]));
@@ -190,14 +215,14 @@ mod tests {
 
     #[test]
     fn empty_input_has_no_document() {
-        assert_eq!(parse_document("", 64), Ok(None));
-        assert_eq!(parse_document("# only a comment\n", 64), Ok(None));
+        assert_eq!(parse_document("", 64, far()), Ok(None));
+        assert_eq!(parse_document("# only a comment\n", 64, far()), Ok(None));
     }
 
     #[test]
     fn malformed_yaml_is_invalid() {
         assert!(matches!(
-            parse_document("a: [unclosed\n", 64),
+            parse_document("a: [unclosed\n", 64, far()),
             Err(ParseFailure::Invalid(_))
         ));
     }
@@ -205,20 +230,31 @@ mod tests {
     #[test]
     fn multiple_documents_are_unsupported() {
         assert!(matches!(
-            parse_document("a: 1\n---\nb: 2\n", 64),
+            parse_document("a: 1\n---\nb: 2\n", 64, far()),
             Err(ParseFailure::Unsupported(_))
         ));
     }
 
     #[test]
+    fn expired_deadline_stops_a_large_document() {
+        let big = (0..2000).map(|i| format!("k{i}: v\n")).collect::<String>();
+        let past = Instant::now() - Duration::from_secs(1);
+        assert_eq!(parse_document(&big, 64, past), Err(ParseFailure::Timeout));
+        assert!(parse_document(&big, 64, far()).is_ok());
+    }
+
+    #[test]
     fn deep_nesting_is_rejected() {
         let deep = "[".repeat(100) + &"]".repeat(100);
-        assert_eq!(parse_document(&deep, 64), Err(ParseFailure::TooDeep(64)));
+        assert_eq!(
+            parse_document(&deep, 64, far()),
+            Err(ParseFailure::TooDeep(64))
+        );
     }
 
     #[test]
     fn scalar_alias_is_copied_and_collection_alias_is_not_expanded() {
-        let node = parse_document("a: &x write-all\nb: *x\nc: &m {k: v}\nd: *m\n", 64)
+        let node = parse_document("a: &x write-all\nb: *x\nc: &m {k: v}\nd: *m\n", 64, far())
             .unwrap()
             .unwrap();
         let Node::Map(entries) = node else {
@@ -230,7 +266,7 @@ mod tests {
 
     #[test]
     fn alias_keeps_its_own_line_and_records_the_definition_line() {
-        let node = parse_document("x: &v write-all\np: *v\nq: *v\n", 64)
+        let node = parse_document("x: &v write-all\np: *v\nq: *v\n", 64, far())
             .unwrap()
             .unwrap();
         let Node::Map(entries) = node else {
@@ -247,7 +283,11 @@ mod tests {
 
     #[test]
     fn python_object_tag_is_just_text() {
-        let node = parse_document("a: !!python/object/apply:os.system [\"echo hi\"]\n", 64);
+        let node = parse_document(
+            "a: !!python/object/apply:os.system [\"echo hi\"]\n",
+            64,
+            far(),
+        );
         assert!(node.is_ok());
     }
 }

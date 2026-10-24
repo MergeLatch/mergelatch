@@ -109,6 +109,72 @@ fn expired_time_limit_is_incomplete() {
 }
 
 #[test]
+fn scan_finishing_after_the_deadline_is_never_clean() {
+    // With a zero limit the deadline has passed before any work completes.
+    // Every shape of repository must come back incomplete, not clean.
+    let limits = ScanLimits {
+        timeout: Duration::ZERO,
+        ..ScanLimits::default()
+    };
+
+    let empty = tempfile::tempdir().unwrap();
+    let report = scan_directory(empty.path(), &limits).unwrap();
+    assert_eq!(report.status, ScanStatus::Incomplete);
+    assert_eq!(kinds(&report), [IncompleteKind::Timeout]);
+
+    let safe = repo();
+    fs::write(workflow(&safe, "ci.yml"), SAFE).unwrap();
+    let report = scan_directory(safe.path(), &limits).unwrap();
+    assert_eq!(report.status, ScanStatus::Incomplete);
+    assert_eq!(kinds(&report), [IncompleteKind::Timeout]);
+}
+
+#[test]
+fn timeout_is_reported_once_and_findings_are_kept() {
+    let dir = repo();
+    for name in ["a.yml", "b.yml", "c.yml"] {
+        fs::write(workflow(&dir, name), WRITE_ALL).unwrap();
+    }
+    let limits = ScanLimits {
+        timeout: Duration::ZERO,
+        ..ScanLimits::default()
+    };
+    let report = scan_directory(dir.path(), &limits).unwrap();
+    assert_eq!(report.status, ScanStatus::Incomplete);
+    let timeouts = kinds(&report)
+        .into_iter()
+        .filter(|k| *k == IncompleteKind::Timeout)
+        .count();
+    assert_eq!(timeouts, 1);
+}
+
+#[test]
+fn generous_time_limit_does_not_change_results() {
+    let dir = repo();
+    fs::write(workflow(&dir, "ci.yml"), WRITE_ALL).unwrap();
+    let limits = ScanLimits {
+        timeout: Duration::from_secs(3600),
+        ..ScanLimits::default()
+    };
+    let report = scan_directory(dir.path(), &limits).unwrap();
+    assert_eq!(report.status, ScanStatus::Findings);
+}
+
+#[test]
+fn unrepresentable_time_limit_does_not_panic() {
+    let dir = repo();
+    fs::write(workflow(&dir, "ci.yml"), SAFE).unwrap();
+    let limits = ScanLimits {
+        timeout: Duration::MAX,
+        ..ScanLimits::default()
+    };
+    assert_eq!(
+        scan_directory(dir.path(), &limits).unwrap().status,
+        ScanStatus::Clean
+    );
+}
+
+#[test]
 fn deeply_nested_yaml_is_incomplete() {
     let dir = repo();
     let deep = format!("a: {}{}\n", "[".repeat(200), "]".repeat(200));

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::discover::discover_workflows;
 use crate::rules::check_workflow;
@@ -36,7 +36,11 @@ impl std::error::Error for ScanError {}
 /// Files are read as data. Nothing in the directory is executed, and Git is
 /// not run.
 pub fn scan_directory(root: &Path, limits: &ScanLimits) -> Result<Report, ScanError> {
-    let deadline = Instant::now() + limits.timeout;
+    let started = Instant::now();
+    // A timeout too large to represent is treated as effectively unlimited.
+    let deadline = started
+        .checked_add(limits.timeout)
+        .unwrap_or_else(|| started + Duration::from_secs(60 * 60 * 24 * 365));
     let meta = fs::metadata(root)
         .map_err(|e| ScanError::InvalidTarget(format!("{}: {e}", root.display())))?;
     if !meta.is_dir() {
@@ -60,9 +64,30 @@ pub fn scan_directory(root: &Path, limits: &ScanLimits) -> Result<Report, ScanEr
             });
             break;
         }
-        let result = check_workflow(file, limits);
+        let result = check_workflow(file, limits, deadline);
         findings.extend(result.findings);
+        let timed_out = result
+            .incomplete
+            .iter()
+            .any(|i| i.kind == IncompleteKind::Timeout);
         incomplete.extend(result.incomplete);
+        if timed_out {
+            break;
+        }
+    }
+
+    // Deadlines are only noticed between operations, so a scan can finish
+    // after the deadline without having noticed. Such a scan must not be
+    // reported as clean: its result is incomplete by definition.
+    if Instant::now() >= deadline && !incomplete.iter().any(|i| i.kind == IncompleteKind::Timeout) {
+        incomplete.push(Incomplete {
+            path: None,
+            kind: IncompleteKind::Timeout,
+            detail: format!(
+                "scan finished after the {} second time limit",
+                limits.timeout.as_secs()
+            ),
+        });
     }
 
     let target = Target {
