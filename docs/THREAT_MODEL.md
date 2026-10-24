@@ -1,6 +1,6 @@
 # MergeLatch Threat Model
 
-**Status:** design document. MergeLatch has no working scanner yet. This document describes the threats the project intends to address and the requirements its design must meet. It does not claim that any protection is implemented. Each section should be revised as components are built and tested.
+**Status:** design document with a first implementation. MergeLatch currently provides a command-line scanner with a single rule, ML-GHA-001, which detects explicit `permissions: write-all` in GitHub Actions workflows. Nothing else described below is implemented: there is no GitHub Action, desktop application, dependency or malware checking, or merge enforcement. This document describes the threats the project intends to address and the requirements its design must meet. It does not claim that protections beyond the single rule exist. See the README for what the scanner covers today and section 10 for known gaps in the current implementation. Each section should be revised as components are built and tested.
 
 ## 1. Purpose
 
