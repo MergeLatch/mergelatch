@@ -15,7 +15,9 @@ from helpers import REPO_ROOT, SHA_ACTION, SHA_MERGE, Workspace, finding, github
 
 WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
 EXAMPLE = REPO_ROOT / "docs" / "examples" / "pull-request-scan.yml"
-# The one MergeLatch commit that has been trial-tested as a SHA-pinned Action.
+# MergeLatch commits trial-tested as a SHA-pinned Action. The trial workflow names the candidate
+# under test; the example and docs name only a commit whose trial has already passed.
+TRIAL_WORKFLOW_SHA = "cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5"
 TRIAL_TESTED_SHA = "0d3ef392b1f18f264ea96d2d8f4796eead4857cc"
 ACTION_YML = (REPO_ROOT / "action.yml").read_text()
 
@@ -170,9 +172,9 @@ class Workflows(unittest.TestCase):
     def test_the_trial_workflow_loads_the_action_by_sha_and_never_from_the_checkout(self):
         trial = (REPO_ROOT / ".github" / "workflows" / "action-trial.yml").read_text()
         uses = re.findall(r"(?m)^\s+uses: (MergeLatch/mergelatch\S*|\./\S*)$", trial)
-        self.assertGreaterEqual(len(uses), 8)
-        self.assertEqual(set(uses), {"MergeLatch/mergelatch@%s" % TRIAL_TESTED_SHA})
-        self.assertIn("ACTION_SHA: %s" % TRIAL_TESTED_SHA, trial)
+        self.assertGreaterEqual(len(uses), 9)
+        self.assertEqual(set(uses), {"MergeLatch/mergelatch@%s" % TRIAL_WORKFLOW_SHA})
+        self.assertIn("ACTION_SHA: %s" % TRIAL_WORKFLOW_SHA, trial)
 
     def test_the_example_scans_the_merge_commit_unless_told_otherwise(self):
         text = uncommented(EXAMPLE.read_text())

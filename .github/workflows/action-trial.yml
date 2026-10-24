@@ -7,7 +7,8 @@ name: Action trial (SHA-pinned)
 # This is advisory and is not a security gate or a required check. It runs on
 # pull_request with a read-only token and no secrets. It scans only inert
 # fixtures and this repository's own workflow files as data. The Action under
-# trial is the reviewed commit named below, not the code in this pull request.
+# trial is the reviewed commit named below (the merge commit of pull request #8),
+# not the code in this pull request.
 on:
   pull_request:
     branches: [main]
@@ -21,10 +22,10 @@ concurrency:
 
 env:
   # The reviewed commit that GitHub downloads and runs as the Action.
-  ACTION_SHA: 0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+  ACTION_SHA: cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
   # SHA-256 of files at that commit, to show the downloaded directory is the reviewed one.
-  ACTION_YML_SHA256: 7af64d3db3335b0dbef51c54a6b06a9c444a70a3092162a224ebd6bfdbb47f3f
-  HELPER_SHA256: d4384cac97a54d8d8bee7a0e1c8aefaf85138a6175bcf3ee2a784c3120a2ea4f
+  ACTION_YML_SHA256: e2cf315032bd24871e6c70524d7bb245b1e73dc5ad8610693834c327c5f2e17e
+  HELPER_SHA256: 686c40ab633f87808faf8ce1d47098ed78e106a2e87fa1766bbb0c9aa45468fd
   BUILD_SH_SHA256: 05b93ff6ae321c7e93f1fe8c694bd752e7844482906bb1a51cb5deeec331d138
   LOCKFILE_SHA256: 0080ec065c655c4478d7135f84666b9aa0de1e6db6c418dfc39e01a461dde053
 
@@ -45,7 +46,7 @@ jobs:
       # settings present. Nothing in this workspace is ever built or run.
       - name: Scan fixtures full of hostile build files, with hostile settings inherited
         id: hostile
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
         env:
           BASH_ENV: ${{ github.workspace }}/fixtures/action-hostile/bash_env.sh
           CARGO_HOME: ${{ github.workspace }}/fixtures/action-hostile/cargo-home
@@ -63,26 +64,35 @@ jobs:
 
       - name: Scan this repository (clean expected)
         id: clean
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
 
       - name: Scan a fixture with a finding
         id: findings
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
         with:
           scan-directory: fixtures/gha-permissions/workflow-write-all
 
       - name: Scan a malformed fixture (incomplete expected)
         id: incomplete
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
         with:
           scan-directory: fixtures/gha-permissions/malformed
 
       - name: Scan a directory that does not exist (error expected)
         id: missing
         continue-on-error: true
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
         with:
           scan-directory: fixtures/does-not-exist
+
+      - name: Scan with a loader variable in the environment (early failure expected)
+        id: loader
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
+        env:
+          LD_PRELOAD: /nonexistent/mergelatch-test-preload.so
+        with:
+          scan-directory: fixtures/action-hostile
 
       # Extra checkouts of other revisions into subdirectories, to test the
       # revision check. They are scanned as data like everything else.
@@ -102,14 +112,14 @@ jobs:
 
       - name: Scan the head checkout (head revision expected)
         id: head
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
         with:
           scan-directory: head-checkout
 
       - name: Scan the stale checkout (revision mismatch expected)
         id: stale
         continue-on-error: true
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
         with:
           scan-directory: stale-checkout
 
@@ -125,6 +135,19 @@ jobs:
           CLEAN_FILES: ${{ steps.clean.outputs.files-inspected }}
           CLEAN_SOURCE: ${{ steps.clean.outputs.scanner-source }}
           CLEAN_PINNED: ${{ steps.clean.outputs.action-pinned }}
+          CLEAN_ACTION_REVISION: ${{ steps.clean.outputs.action-revision }}
+          HEAD_ACTION_REVISION: ${{ steps.head.outputs.action-revision }}
+          HEAD_SOURCE: ${{ steps.head.outputs.scanner-source }}
+          STALE_ACTION_REVISION: ${{ steps.stale.outputs.action-revision }}
+          MISSING_REVISION_CHECK: ${{ steps.missing.outputs.revision-check }}
+          MISSING_SOURCE: ${{ steps.missing.outputs.scanner-source }}
+          MISSING_ACTION_REVISION: ${{ steps.missing.outputs.action-revision }}
+          LOADER_OUTCOME: ${{ steps.loader.outcome }}
+          LOADER_STATUS: ${{ steps.loader.outputs.status }}
+          LOADER_REVISION_CHECK: ${{ steps.loader.outputs.revision-check }}
+          LOADER_SOURCE: ${{ steps.loader.outputs.scanner-source }}
+          LOADER_PINNED: ${{ steps.loader.outputs.action-pinned }}
+          LOADER_ACTION_REVISION: ${{ steps.loader.outputs.action-revision }}
           CLEAN_REVISION_CHECK: ${{ steps.clean.outputs.revision-check }}
           CLEAN_REVISION: ${{ steps.clean.outputs.scanned-revision }}
           CLEAN_VERSION: ${{ steps.clean.outputs.scanner-version }}
@@ -166,6 +189,11 @@ jobs:
           # 2. Provenance reported by the Action itself.
           [ "${CLEAN_SOURCE}" = action-checkout ] || fail "scanner-source was not action-checkout"
           [ "${CLEAN_PINNED}" = true ] || fail "action-pinned was not true"
+          # The corrected provenance reporting: the full SHA the runner loaded the Action from.
+          [ "${CLEAN_ACTION_REVISION}" = "${ACTION_SHA}" ] || fail "action-revision was not the expected full commit SHA"
+          [ "${HEAD_ACTION_REVISION}" = "${ACTION_SHA}" ] || fail "head scan action-revision was wrong"
+          [ "${STALE_ACTION_REVISION}" = "${ACTION_SHA}" ] || fail "stale scan action-revision was wrong"
+          [ "${HEAD_SOURCE}" = action-checkout ] || fail "head scan scanner-source was wrong"
           [ -n "${CLEAN_VERSION}" ] || fail "no scanner version reported"
           [ "${CLEAN_RULESET}" = mergelatch-builtin-1 ] || fail "unexpected ruleset"
 
@@ -185,6 +213,17 @@ jobs:
           [ "${INCOMPLETE_EXIT}" = 2 ] || fail "exit code 2 was not preserved"
           [ "${MISSING_OUTCOME}" = failure ] || fail "a missing directory did not fail the step"
           [ "${MISSING_STATUS}" = error ] || fail "a missing directory was not reported as an error"
+          # No scan result was compared, so no revision check may be claimed.
+          [ "${MISSING_REVISION_CHECK}" = not-checked ] || fail "an error before a scan did not report not-checked"
+          [ "${MISSING_SOURCE}" = action-checkout ] || fail "a late preparation error lost the scanner source"
+          [ "${MISSING_ACTION_REVISION}" = "${ACTION_SHA}" ] || fail "a failed run did not report the Action revision"
+          # An error before the scanner source is known must not claim a pinned source.
+          [ "${LOADER_OUTCOME}" = failure ] || fail "a loader variable did not fail the step"
+          [ "${LOADER_STATUS}" = error ] || fail "a loader variable was not reported as an error"
+          [ "${LOADER_REVISION_CHECK}" = not-checked ] || fail "an early failure did not report not-checked"
+          [ "${LOADER_SOURCE}" = unknown ] || fail "an early failure did not report scanner-source unknown"
+          [ "${LOADER_PINNED}" = true ] || fail "the loaded Action was not reported as pinned"
+          [ "${LOADER_ACTION_REVISION}" = "${ACTION_SHA}" ] || fail "an early failure lost the Action revision"
           [ "${HEAD_STATUS}" = clean ] || fail "head checkout scan was not clean"
           [ "${HEAD_REVISION_CHECK}" = matches-head ] || fail "head checkout was not matches-head"
           [ "${HEAD_REVISION}" = "${EXPECTED_HEAD}" ] || fail "head revision differs from the pull request head"
@@ -221,7 +260,7 @@ jobs:
       - name: Run the Action without a checkout (failure expected)
         id: nocheckout
         continue-on-error: true
-        uses: MergeLatch/mergelatch@0d3ef392b1f18f264ea96d2d8f4796eead4857cc
+        uses: MergeLatch/mergelatch@cf89c21dad24ad95121fd7d8ce47fe1b6b5f80e5
 
       - name: Check the result
         env:
