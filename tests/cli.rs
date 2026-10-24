@@ -197,3 +197,68 @@ fn secret_like_text_near_a_finding_is_not_printed() {
         assert!(stdout(&out).contains("permissions: write-all"));
     }
 }
+
+#[test]
+fn all_four_rules_are_listed() {
+    let json = mergelatch(&["rules", "--format", "json"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout(&json)).unwrap();
+    let ids: Vec<_> = value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["ML-GHA-001", "ML-GHA-002", "ML-GHA-003", "ML-GHA-004"]
+    );
+}
+
+#[test]
+fn one_workflow_can_trigger_every_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let wf = dir.path().join(".github/workflows");
+    fs::create_dir_all(&wf).unwrap();
+    fs::write(
+        wf.join("ci.yml"),
+        "on: pull_request_target\npermissions: write-all\njobs:\n  build:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n      - run: echo ${{ github.event.pull_request.title }} && npm test\n",
+    )
+    .unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    let json = mergelatch(&["scan", path, "--format", "json"]);
+    assert_eq!(json.status.code(), Some(1));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&json)).unwrap();
+    let ids: Vec<_> = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["ML-GHA-001", "ML-GHA-002", "ML-GHA-003", "ML-GHA-004"]
+    );
+
+    let again = mergelatch(&["scan", path, "--format", "json"]);
+    assert_eq!(stdout(&json), stdout(&again));
+
+    let human = mergelatch(&["scan", path]);
+    assert_eq!(human.status.code(), Some(1));
+    assert!(stdout(&human).contains("Findings (4):"));
+}
+
+#[test]
+fn analysis_limits_exit_two() {
+    let dir = tempfile::tempdir().unwrap();
+    let wf = dir.path().join(".github/workflows");
+    fs::create_dir_all(&wf).unwrap();
+    fs::write(
+        wf.join("ci.yml"),
+        "on: push\njobs:\n  a:\n    steps:\n      - uses: owner/repo@${{ matrix.ref }}\n",
+    )
+    .unwrap();
+    let out = mergelatch(&["scan", dir.path().to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stdout(&out).contains("analysis_limit"));
+}
