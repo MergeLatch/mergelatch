@@ -1,0 +1,8 @@
+name: Branch
+on: pull_request
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: owner/repo@main
+      - uses: owner/repo/sub/path@v2

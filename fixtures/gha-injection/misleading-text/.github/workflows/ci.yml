@@ -1,0 +1,17 @@
+# run: echo ${{ github.event.pull_request.title }}
+name: "run: echo ${{ github.event.pull_request.title }}"
+on: pull_request
+env:
+  NOTE: "echo ${{ github.event.pull_request.title }}"
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: "echo ${{ github.event.pull_request.title }}"
+        run: |
+          # no expression here
+          echo "plain"
+        shell: bash
+      - uses: actions/github-script@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          script: console.log("${{ github.event.pull_request.title }}")

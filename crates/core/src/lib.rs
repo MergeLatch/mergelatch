@@ -4,6 +4,7 @@
 //! content, and it never reports an incomplete inspection as clean.
 
 mod discover;
+mod expr;
 mod fsaccess;
 mod limits;
 mod model;
@@ -19,6 +20,9 @@ pub use model::{
     SCHEMA_VERSION, ScanStatus, ScannerInfo, Severity, Summary, Target,
 };
 pub use revision::read_revision;
-pub use rules::{RULE_WRITE_ALL, RuleInfo, builtin_rules};
+pub use rules::{
+    RULE_PRIVILEGED_PR_CODE, RULE_SCRIPT_INJECTION, RULE_UNPINNED, RULE_WRITE_ALL, RuleInfo,
+    builtin_rules,
+};
 pub use scan::{RULESET_ID, RULESET_VERSION, ScanError, scan_directory};
 pub use text::sanitize_text;

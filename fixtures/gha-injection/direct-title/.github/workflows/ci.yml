@@ -1,0 +1,13 @@
+name: Greet
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  greet:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Say hello
+        run: |
+          echo "starting"
+          echo "Title: ${{ github.event.pull_request.title }}"
+          echo "done"

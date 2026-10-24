@@ -17,6 +17,8 @@ pub(crate) enum Node {
         line: usize,
         /// Literal (`|`) or folded (`>`) block scalar.
         block: bool,
+        /// Literal (`|`) block scalar, whose lines match the source lines.
+        literal: bool,
         /// For a scalar that came from an alias: the line where the anchored
         /// value is defined. `line` is then the line where the alias is used.
         alias_of: Option<usize>,
@@ -27,6 +29,48 @@ pub(crate) enum Node {
 }
 
 impl Node {
+    /// The text of any scalar, including block scalars.
+    pub(crate) fn text(&self) -> Option<&str> {
+        match self {
+            Node::Scalar { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    /// For a literal block scalar, the source line of the first line of its
+    /// value. The parser reports the first non-blank content line, so blank
+    /// lines at the start of the value are counted back from it.
+    pub(crate) fn literal_first_line(&self) -> Option<usize> {
+        match self {
+            Node::Scalar {
+                value,
+                line,
+                literal: true,
+                ..
+            } => {
+                let blank = value.chars().take_while(|c| *c == '\n').count();
+                line.checked_sub(blank)
+            }
+            _ => None,
+        }
+    }
+
+    /// Source line of a scalar (where an alias is used, for aliased scalars).
+    pub(crate) fn line(&self) -> Option<usize> {
+        match self {
+            Node::Scalar { line, .. } => Some(*line),
+            _ => None,
+        }
+    }
+
+    /// For a scalar that came from an alias, the line of the anchored value.
+    pub(crate) fn alias_of(&self) -> Option<usize> {
+        match self {
+            Node::Scalar { alias_of, .. } => *alias_of,
+            _ => None,
+        }
+    }
+
     /// The text of a non-block scalar.
     pub(crate) fn as_str(&self) -> Option<&str> {
         match self {
@@ -124,6 +168,7 @@ fn parse(text: &str, max_depth: usize, deadline: Instant) -> Result<Option<Node>
                     value,
                     line: mark.line(),
                     block: matches!(style, TScalarStyle::Literal | TScalarStyle::Folded),
+                    literal: matches!(style, TScalarStyle::Literal),
                     alias_of: None,
                 };
                 if anchor > 0 {
@@ -141,6 +186,8 @@ fn parse(text: &str, max_depth: usize, deadline: Instant) -> Result<Option<Node>
                         value: value.clone(),
                         line: mark.line(),
                         block: *block,
+                        // The text is not at this position in the source.
+                        literal: false,
                         alias_of: Some(*line),
                     },
                     _ => Node::CollectionAlias,
@@ -187,6 +234,7 @@ mod tests {
             value: value.into(),
             line,
             block: false,
+            literal: false,
             alias_of: None,
         }
     }
@@ -279,6 +327,29 @@ mod tests {
         assert_eq!(alias(0), (1, None));
         assert_eq!(alias(1), (2, Some(1)));
         assert_eq!(alias(2), (3, Some(1)));
+    }
+
+    #[test]
+    fn literal_block_scalar_line_is_reported() {
+        let node = parse_document("a: 1\nrun: |\n  first\n  second\nz: 2\n", 64, far())
+            .unwrap()
+            .unwrap();
+        let Node::Map(entries) = node else { panic!() };
+        assert!(entries[1].1.literal_first_line().is_some());
+        assert_eq!(entries[1].1.text(), Some("first\nsecond\n"));
+        // Calibration for the rules: the parser reports the first content line.
+        assert_eq!(entries[1].1.line(), Some(3));
+    }
+
+    #[test]
+    fn literal_block_line_with_leading_blank_lines_and_comment() {
+        let src = "run: | # c\n\n\n  first\n  second\n";
+        let node = parse_document(src, 64, far()).unwrap().unwrap();
+        let Node::Map(entries) = node else { panic!() };
+        assert_eq!(entries[0].1.text(), Some("\n\nfirst\nsecond\n"));
+        // The reported line is the first non-blank content line (here 4), while
+        // the value starts with two blank lines that begin on source line 2.
+        assert_eq!(entries[0].1.line(), Some(4));
     }
 
     #[test]

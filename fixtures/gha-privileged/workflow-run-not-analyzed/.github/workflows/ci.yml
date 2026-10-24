@@ -1,0 +1,13 @@
+name: Workflow run
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - run: npm ci

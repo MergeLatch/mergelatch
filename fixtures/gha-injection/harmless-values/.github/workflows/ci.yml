@@ -1,0 +1,14 @@
+name: Harmless
+on: pull_request
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+    steps:
+      - run: |
+          echo ${{ github.event.pull_request.number }}
+          echo ${{ github.sha }} ${{ github.repository }} ${{ github.actor }}
+          echo ${{ github.event.pull_request.head.sha }} ${{ matrix.os }}
+          echo ${{ github.event_name }} ${{ runner.os }} ${{ secrets.NOT_A_REAL_SECRET }}

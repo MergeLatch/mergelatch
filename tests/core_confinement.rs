@@ -115,9 +115,12 @@ fn scan_while(world: &World, flip: impl Fn(&Paths, usize) + Send + 'static) -> V
             }
         })
     };
-    let reports: Vec<_> = (0..SCANS)
-        .map(|_| scan_directory(&paths.repo, &ScanLimits::default()).expect("scan should run"))
-        .collect();
+    // Keep scanning until the flipper has actually run, so a fast scan loop
+    // cannot finish before the other thread gets scheduled.
+    let mut reports = Vec::new();
+    while reports.len() < SCANS || (flips.load(Ordering::Relaxed) < 50 && reports.len() < 20_000) {
+        reports.push(scan_directory(&paths.repo, &ScanLimits::default()).expect("scan should run"));
+    }
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
     assert!(

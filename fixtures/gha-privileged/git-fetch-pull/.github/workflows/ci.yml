@@ -1,0 +1,9 @@
+name: Fetch
+on: pull_request_target
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: git fetch origin pull/${{ github.event.number }}/head:pr
+      - run: git checkout pr
+      - run: cargo test

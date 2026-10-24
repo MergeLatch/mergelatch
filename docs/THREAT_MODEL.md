@@ -1,6 +1,6 @@
 # MergeLatch Threat Model
 
-**Status:** design document with a first implementation. MergeLatch currently provides a command-line scanner with a single rule, ML-GHA-001, which detects explicit `permissions: write-all` in GitHub Actions workflows. Nothing else described below is implemented: there is no GitHub Action, desktop application, dependency or malware checking, or merge enforcement. This document describes the threats the project intends to address and the requirements its design must meet. It does not claim that protections beyond the single rule exist. See the README for what the scanner covers today and section 10 for known gaps in the current implementation. Each section should be revised as components are built and tested.
+**Status:** design document with a first implementation. MergeLatch currently provides a command-line scanner with four narrow rules for GitHub Actions workflows (ML-GHA-001 to ML-GHA-004, described in `docs/RULES.md`): explicit `write-all` permissions, unpinned external references, attacker-controllable values in `run:` scripts, and pull request code run in `pull_request_target` jobs. Nothing else described below is implemented: there is no GitHub Action, desktop application, dependency or malware checking, or merge enforcement. This document describes the threats the project intends to address and the requirements its design must meet. It does not claim that protections beyond those four rules exist, and the rules themselves cover only specific patterns. See the README for what the scanner covers today and section 10 for known gaps in the current implementation. Each section should be revised as components are built and tested.
 
 ## 1. Purpose
 
@@ -63,6 +63,8 @@ MergeLatch aims to help maintainers and developers notice security-sensitive cha
 - Self-hosted runners exposed to untrusted code.
 - Secrets exposed to forked pull requests, or written to logs and artifacts.
 - Workflow changes made in the same PR whose checks they control.
+
+Implemented (partially) by `ML-GHA-001` to `ML-GHA-004`: write-all permissions, mutable action references, direct interpolation of attacker-controllable values into `run:` scripts, and pull request code checked out and run under `pull_request_target`. Other items in this list, such as self-hosted runners, secret exposure to forked pull requests in general, `workflow_run` privilege escalation, and workflow changes in the same PR as their checks, are not detected.
 
 ### 4.4 Local repository threats
 
@@ -159,7 +161,10 @@ These are limitations of the current scanner. They are recorded here so they are
   - **Before Sentinel or an enforcement gate:** add the Windows and macOS backends with tests, exercise the fallback path, decide how to treat mounts and hard links, and have the access layer independently reviewed.
 - **Time limit is detection, not cancellation.** The deadline is checked between files and during YAML parsing. A single blocking filesystem operation is not interrupted, so a scan can overrun its limit. An overrun is reported as incomplete, never clean. Strict enforcement would require running the scan in a separate process that can be terminated.
 - **Parser trust.** YAML is parsed with a third-party library. A panic is caught and reported as incomplete, but a parser that hangs or exhausts memory within the input size limit is not otherwise contained.
-- **Narrow coverage.** Only one rule exists. See the README for the current list.
+- **Narrow coverage.** Only four rules exist, each limited to specific patterns. See `docs/RULES.md` for what each does and does not cover.
+- **Rule-level false negatives.** Known examples: `workflow_run` workflows are not analyzed (a similar privileged-execution risk); script injection is only checked in `run:` steps and for a fixed list of context fields; data flow through `env`, step outputs, and `GITHUB_ENV` is not tracked; execution of pull request code is recognized by fixed command lists, argument checks for a few tools (`git`, `gh`, `sed`, `awk`, `tar`), and local actions, so other ways of running code are missed; pinning is judged by syntax and does not consider repository policies or whether the pinned code is trustworthy.
+- **Rule-level false positives.** Every non-SHA reference is flagged (including GitHub-owned actions); a flagged expression may not be exploitable for the workflow's trigger; some safe uses of listed commands after a pull request checkout will be flagged, and after any pull request checkout the rule assumes the workspace still holds that code (a later trusted checkout, a `path:` subdirectory, or a `working-directory:` does not clear the finding).
+- **Fail-closed analysis limits.** Constructs the rules cannot resolve make the scan incomplete (exit code 2) instead of clean, which can make ordinary workflows non-passing until they are simplified. This is deliberate.
 
 ## 11. Open questions
 
