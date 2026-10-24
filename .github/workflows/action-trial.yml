@@ -7,7 +7,7 @@ name: Action trial (SHA-pinned)
 # This is advisory and is not a security gate or a required check. It runs on
 # pull_request with a read-only token and no secrets. It scans only inert
 # fixtures and this repository's own workflow files as data. The Action under
-# trial is the reviewed commit named below (the merge commit of pull request #12, which adds the strict pull_request event allowlist),
+# trial is the reviewed commit named below (the merge commit of pull request #18, which makes an unverifiable pull_request revision an error),
 # not the code in this pull request.
 on:
   pull_request:
@@ -22,10 +22,10 @@ concurrency:
 
 env:
   # The reviewed commit that GitHub downloads and runs as the Action.
-  ACTION_SHA: 2a1a514b94754b146a690cf98ef59bc649d423ff
+  ACTION_SHA: 95bad26bc731caa913861e95f75bf2c4de3dc6b4
   # SHA-256 of files at that commit, to show the downloaded directory is the reviewed one.
   ACTION_YML_SHA256: e2cf315032bd24871e6c70524d7bb245b1e73dc5ad8610693834c327c5f2e17e
-  HELPER_SHA256: b04cbbea00226723eb32623d4864169720fd57ed5a5a4e100bdac129016e92ec
+  HELPER_SHA256: d917394e03d2babbc988ecd08509bec6d97f9f61516919f1bb2e6cf8b3e01685
   BUILD_SH_SHA256: 05b93ff6ae321c7e93f1fe8c694bd752e7844482906bb1a51cb5deeec331d138
   LOCKFILE_SHA256: 0080ec065c655c4478d7135f84666b9aa0de1e6db6c418dfc39e01a461dde053
 
@@ -46,7 +46,7 @@ jobs:
       # settings present. Nothing in this workspace is ever built or run.
       - name: Scan fixtures full of hostile build files, with hostile settings inherited
         id: hostile
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
         env:
           BASH_ENV: ${{ github.workspace }}/fixtures/action-hostile/bash_env.sh
           CARGO_HOME: ${{ github.workspace }}/fixtures/action-hostile/cargo-home
@@ -64,31 +64,31 @@ jobs:
 
       - name: Scan this repository (clean expected)
         id: clean
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
 
       - name: Scan a fixture with a finding
         id: findings
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
         with:
           scan-directory: fixtures/gha-permissions/workflow-write-all
 
       - name: Scan a malformed fixture (incomplete expected)
         id: incomplete
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
         with:
           scan-directory: fixtures/gha-permissions/malformed
 
       - name: Scan a directory that does not exist (error expected)
         id: missing
         continue-on-error: true
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
         with:
           scan-directory: fixtures/does-not-exist
 
       - name: Scan with a loader variable in the environment (early failure expected)
         id: loader
         continue-on-error: true
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
         env:
           LD_PRELOAD: /nonexistent/mergelatch-test-preload.so
         with:
@@ -112,16 +112,46 @@ jobs:
 
       - name: Scan the head checkout (head revision expected)
         id: head
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
         with:
           scan-directory: head-checkout
 
       - name: Scan the stale checkout (revision mismatch expected)
         id: stale
         continue-on-error: true
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
         with:
           scan-directory: stale-checkout
+
+      # A pull_request scan whose revision cannot be verified must be an error
+      # even though the real checkout above has a valid merge HEAD. These are
+      # inert text files in sub-directories (GitHub never runs them as workflows)
+      # and are only read as data. Each directory has a `.git` FILE that points
+      # nowhere, as a submodule or worktree would, so its own revision cannot be
+      # read and it must not borrow the parent's.
+      - name: Create inert nested checkouts whose revision cannot be read
+        run: |
+          set -euo pipefail
+          mkdir unverified-nested unverified-nested-findings
+          cp -R fixtures/gha-permissions/safe-read-only/.github unverified-nested/.github
+          cp -R fixtures/gha-permissions/workflow-write-all/.github unverified-nested-findings/.github
+          for dir in unverified-nested unverified-nested-findings; do
+            printf 'gitdir: ../nowhere\n' > "${dir}/.git"
+          done
+
+      - name: Scan a clean nested checkout with no readable revision (error expected, the step fails on purpose)
+        id: unverified
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
+        with:
+          scan-directory: unverified-nested
+
+      - name: Scan a nested checkout with a finding and no readable revision (error expected, not findings)
+        id: unverified_findings
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
+        with:
+          scan-directory: unverified-nested-findings
 
       - name: Verify the trust boundary and provenance
         env:
@@ -168,6 +198,20 @@ jobs:
           STALE_OUTCOME: ${{ steps.stale.outcome }}
           STALE_STATUS: ${{ steps.stale.outputs.status }}
           STALE_REVISION_CHECK: ${{ steps.stale.outputs.revision-check }}
+          FINDINGS_REVISION_CHECK: ${{ steps.findings.outputs.revision-check }}
+          FINDINGS_REVISION: ${{ steps.findings.outputs.scanned-revision }}
+          INCOMPLETE_REVISION_CHECK: ${{ steps.incomplete.outputs.revision-check }}
+          UNVERIFIED_OUTCOME: ${{ steps.unverified.outcome }}
+          UNVERIFIED_STATUS: ${{ steps.unverified.outputs.status }}
+          UNVERIFIED_REVISION_CHECK: ${{ steps.unverified.outputs.revision-check }}
+          UNVERIFIED_REVISION: ${{ steps.unverified.outputs.scanned-revision }}
+          UNVERIFIED_SOURCE: ${{ steps.unverified.outputs.scanner-source }}
+          UNVERIFIED_ACTION_REVISION: ${{ steps.unverified.outputs.action-revision }}
+          UNVERIFIED_FINDINGS_OUTCOME: ${{ steps.unverified_findings.outcome }}
+          UNVERIFIED_FINDINGS_STATUS: ${{ steps.unverified_findings.outputs.status }}
+          UNVERIFIED_FINDINGS_COUNT: ${{ steps.unverified_findings.outputs.findings-count }}
+          UNVERIFIED_FINDINGS_REVISION_CHECK: ${{ steps.unverified_findings.outputs.revision-check }}
+          UNVERIFIED_FINDINGS_REVISION: ${{ steps.unverified_findings.outputs.scanned-revision }}
         run: |
           set -euo pipefail
           fail() { echo "::error title=Trial::$1"; exit 1; }
@@ -231,6 +275,27 @@ jobs:
           [ "${STALE_STATUS}" = error ] || fail "a stale revision was not reported as an error"
           [ "${STALE_REVISION_CHECK}" = mismatch ] || fail "a stale revision was not reported as a mismatch"
 
+          # 3b. Sub-directory scans are verified through the workspace checkout's own HEAD.
+          [ "${FINDINGS_REVISION_CHECK}" = matches-merge ] || fail "a fixture sub-directory scan was not verified as matches-merge"
+          [ "${FINDINGS_REVISION}" = "${EXPECTED_MERGE}" ] || fail "a fixture sub-directory scan reported a different revision"
+          [ "${INCOMPLETE_REVISION_CHECK}" = matches-merge ] || fail "the incomplete fixture scan was not verified as matches-merge"
+
+          # 3c. EXPECTED ACTION FAILURES. The two steps above are meant to fail: this job passes only
+          # because every assertion below confirms that they failed in exactly this way. An unreadable
+          # nested revision is an error and never clean, findings, or incomplete, and the parent
+          # checkout's valid merge HEAD must not stand in for it.
+          [ "${UNVERIFIED_OUTCOME}" = failure ] || fail "an unverifiable revision did not fail the Action step"
+          [ "${UNVERIFIED_STATUS}" = error ] || fail "an unverifiable revision was not reported as an error"
+          [ "${UNVERIFIED_REVISION_CHECK}" = unavailable ] || fail "the unverifiable revision was not reported as unavailable"
+          [ -z "${UNVERIFIED_REVISION}" ] || fail "an unverifiable scan reported a scanned revision"
+          [ "${UNVERIFIED_SOURCE}" = action-checkout ] || fail "the unverifiable scan lost the scanner source"
+          [ "${UNVERIFIED_ACTION_REVISION}" = "${ACTION_SHA}" ] || fail "the unverifiable scan lost the Action revision"
+          [ "${UNVERIFIED_FINDINGS_OUTCOME}" = failure ] || fail "an unverifiable revision with a finding did not fail the step"
+          [ "${UNVERIFIED_FINDINGS_STATUS}" = error ] || fail "a finding hid an unverifiable revision (status was not error)"
+          [ "${UNVERIFIED_FINDINGS_REVISION_CHECK}" = unavailable ] || fail "the finding scan's revision was not unavailable"
+          [ -z "${UNVERIFIED_FINDINGS_REVISION}" ] || fail "the finding scan reported a scanned revision"
+          [ "${UNVERIFIED_FINDINGS_COUNT}" = 1 ] || fail "the finding was not still shown in the counts"
+
           # 4. Hostile inputs were only read as data and inherited settings were ignored.
           [ "${HOSTILE_STATUS}" = clean ] || fail "hostile fixtures were not scanned clean"
           [ "${HOSTILE_IGNORED}" -ge 5 ] || fail "hostile inherited settings were not seen and ignored"
@@ -267,7 +332,7 @@ jobs:
       - name: Run the Action without a checkout (failure expected)
         id: nocheckout
         continue-on-error: true
-        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
 
       - name: Check the result
         env:
