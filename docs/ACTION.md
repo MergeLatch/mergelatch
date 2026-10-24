@@ -236,7 +236,19 @@ Open items before a first controlled public release candidate:
 2. Independent review of the D-1 `pull_request`-only allowlist (implemented and trial-tested at `2a1a514b94754b146a690cf98ef59bc649d423ff`) and maintainer dispositions for D-2 through D-4 in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions).
 3. A consumer-trial run pinned to the **exact candidate release commit**, even if its implementation is byte-identical to the tested `2a1a514b94754b146a690cf98ef59bc649d423ff` implementation ([RELEASE_PLAN.md](RELEASE_PLAN.md)).
 
-Verified for the historical `afc7e65…` implementation: the in-repository trial including its rendered full SHA, separate consumer trial, and first-time external fork PR (README-only). Verified separately for `2a1a514b94754b146a690cf98ef59bc649d423ff`: in-repository and separate consumer trials, the manually dispatched unsupported-event rejection, and a first-time README-only external-fork PR ([run 40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817)) after maintainer approval. No trial of an attacker modifying the caller workflow has been performed.
+Verified for the historical `afc7e65…` implementation: the in-repository trial including its rendered full SHA, separate consumer trial, and first-time external fork PR (README-only). Verified separately for `2a1a514b94754b146a690cf98ef59bc649d423ff`: in-repository and separate consumer trials, the manually dispatched unsupported-event rejection, and a first-time README-only external-fork PR ([run 40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817)) after maintainer approval. The newer D-2 SHA `95bad26bc731caa913861e95f75bf2c4de3dc6b4` has its own source and consumer pinned trials (below), but no D-2 fork run or independent security review. No test of a contributor editing the caller workflow has been performed.
+
+### D-2 revision hardening: `95bad26bc731caa913861e95f75bf2c4de3dc6b4`
+
+This is a distinct implementation from the historical D-1 SHA above. PR #18 merged the fail-closed revision behavior at `95bad26bc731caa913861e95f75bf2c4de3dc6b4`.
+
+| Verification | Evidence and limitations |
+| --- | --- |
+| In-repository SHA-pinned trial | [Run 40119258974](https://github.com/MergeLatch/mergelatch/actions/runs/40119258974), PR #19 (merged). GitHub downloaded the full SHA and compiled from the separate `_actions/` directory. SHA-256 assertions passed, including helper hash `d917394e03d2babbc988ecd08509bec6d97f9f61516919f1bb2e6cf8b3e01685`. Normal merge/head, stale, findings, incomplete, hostile build settings, missing checkout and deliberately unverified nested checkouts behaved as asserted |
+| Separate consumer trial | [Run 40120225597](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40120225597), consumer [PR #7](https://github.com/MergeLatch/mergelatch-consumer-trial/pull/7), subsequently merged as `3ad4622f7b9d4804530cb640dcf89fd66b2ab8b9`. Runner downloaded and compiled the same pinned SHA. Inert nested-checkout clean and finding scans each returned `status=error`, `revision-check=unavailable`, an empty scanned revision and a **failed Action step**. The finding count remained one. Ordinary subdirectory revision checks matched the merge SHA |
+| Rendered D-2 job summaries | Not separately inspected in a browser. Logs and workflow assertions were inspected |
+| New external fork test of D-2 | Not performed. The README-only fork trial [40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817) tested the earlier D-1 SHA |
+| Independent human review and published release | Both **pending**; trials are maintainer-led verification, not approval to release |
 
 ## Known limitations
 

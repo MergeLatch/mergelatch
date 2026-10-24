@@ -162,6 +162,17 @@ Evidence for the **corrected implementation** `2a1a514…` (strict event allowli
 | `workflow_dispatch` rejected-event test: the Action step failed as intended and the assertion job passed (consumer PR #4 workflow, dispatched by the maintainer) | [40108606160](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40108606160) | success |
 | First-time external fork PR #6 against `2a1a514b94754b146a690cf98ef59bc649d423ff`, README-only edit, approved by maintainer after `action_required`; closed unmerged | [40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817) (attempt 2) | success: full pinned SHA, `action-checkout`, `matches-merge`, clean repository, one fixture finding, one incomplete fixture |
 
+D-2 fail-closed revision evidence for the **new** pinned Action implementation `95bad26bc731caa913861e95f75bf2c4de3dc6b4` (merged PR #18), separate from D-1 history:
+
+| What | Run | Result |
+| --- | --- | --- |
+| Source SHA-pinned trial (PR #19, merged) | [40119258974](https://github.com/MergeLatch/mergelatch/actions/runs/40119258974) | Success. Full pinned SHA downloaded; downloaded file SHA-256 assertions passed; clean, findings, incomplete, merge/head, stale, hostile settings, and deliberately unverified nested revisions behaved as asserted |
+| Separate SHA-pinned consumer trial (consumer PR #7, merged) | [40120225597](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40120225597) | Success. Two deliberately unverifiable nested checkout steps **failed** with `error`/`unavailable` and blank scanned revisions; the finding count remained one; normal fixture subdirectories matched the merge SHA |
+| New D-2 fork run | Not performed | Earlier README-only fork trial used D-1 |
+| Independent qualified human review | Pending | Maintainer-led tests do not count as independent sign-off |
+
+The D-2 logs and test assertions were inspected; the rendered job summaries were not separately viewed in a browser.
+
 The checks for the review-readiness pull request itself appear on that pull request and are reported with it; they run the implementation as `uses: ./` and are therefore not tests of a pinned Action.
 
 ### Local checks (2026-10-24, this machine, Linux x86-64, Rust 1.99.1)
@@ -205,7 +216,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 | ID | Type | Component | Summary | Severity | Reproduced | Disposition |
 | --- | --- | --- | --- | --- | --- | --- |
 | F-01 | Confirmed behavior; documentation was inconsistent | `prepare`, `PRIVILEGED_EVENTS` (as reviewed) | Event guard was a refusal list of two names, not an allowlist | Informational (docs); Low (hardening) | Yes | Docs corrected. **D-1 implemented (merged as `2a1a514…`) and verified as a pinned Action; not independently reviewed, not released** |
-| F-02 | Design limitation (as reviewed) | `check_revision`, scanner revision reader | No revision check for subdirectory scans or non-`pull_request` events; result stayed green | Low | Yes | Documented, then **D-2 implemented on branch `fix/action-fail-closed-revision`: unverifiable revisions on `pull_request` are errors. Not independently reviewed, not released, not yet verified as a pinned Action** |
+| F-02 | Design limitation (as reviewed) | `check_revision`, scanner revision reader | No revision check for subdirectory scans or non-`pull_request` events; result stayed green | Low | Yes | Documented, then **D-2 merged at `95bad26bc731caa913861e95f75bf2c4de3dc6b4` in PR #18 and verified with source and consumer pinned GitHub runs (40119258974, 40120225597). Not independently reviewed or released** |
 | F-03 | Confirmed behavior; fail-closed | scanner (no findings cap), `parse_report` | A small workflow can produce a report over the 5 MiB limit; the step fails with `error` | Low | Yes | Regression test added. Accepted; decision D-3 |
 | F-04 | Design limitation | consumer workflow | A pull request can edit or remove the caller's step | High if used as a gate; none as advisory | Documented; fork trial did not try it | Documented and prohibited as a required check |
 | F-05 | Design limitation | job composition | A prior same-job step running pull request code can alter state files, the target directory, `GITHUB_ENV`, `GITHUB_PATH`, or the runner's Rust installation | Medium if misused | Not reproduced this phase | Documented: run before any such step |
@@ -231,7 +242,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 - **Behavior (reproduced with the real scanner):** the revision is read from `.git` in the scanned directory. For `scan-directory: sub` there is none, so `revision-check` is `unavailable`, the status is unchanged, and the step is green. For events other than `pull_request` the result is `not-applicable`.
 - **Threat:** a stale or wrong checkout is not detected in those configurations, so the scan may describe other content than the pull request. The effect is a wrong advisory result, not code execution.
 - **Attacker capability required:** control over what is checked out, which belongs to the workflow author (or to code run earlier in the job).
-- **Disposition:** first documented. Then, as part of the maintainer-led hardening, D-2 was implemented in the helper only (the scanner and `action.yml` are unchanged): on `pull_request`, `unavailable` and missing expected commits are `error`, and for an ordinary subdirectory the workspace root's `.git/HEAD` is used when it is a detached lowercase commit ID no longer than 256 bytes, read through no-follow, directory-relative opens. The fallback is skipped for a nested checkout (any `.git` entry between the scanned directory and the root). Both properties were added after maintainer review of the first version of this change. A branch checkout combined with a subdirectory scan, and a `.git` file, now fail (compatibility is described in [ACTION.md](ACTION.md#what-revision-is-scanned)). `afc7e65…` and `2a1a514…` do not contain this change. Status: **implemented on the branch; not independently reviewed; not released; the corrected helper has not run as a pinned Action**, so the targeted re-verification in [RELEASE_PLAN.md](RELEASE_PLAN.md) applies.
+- **Disposition:** first documented. Then, as part of the maintainer-led hardening, D-2 was implemented in the helper only (the scanner and `action.yml` are unchanged): on `pull_request`, `unavailable` and missing expected commits are `error`, and for an ordinary subdirectory the workspace root's `.git/HEAD` is used when it is a detached lowercase commit ID no longer than 256 bytes, read through no-follow, directory-relative opens. The fallback is skipped for a nested checkout (any `.git` entry between the scanned directory and the root). Both properties were added after maintainer review of the first version of this change. A branch checkout combined with a subdirectory scan, and a `.git` file, now fail (compatibility is described in [ACTION.md](ACTION.md#what-revision-is-scanned)). `afc7e65…` and `2a1a514…` do not contain this change. Status: **merged as `95bad26bc731caa913861e95f75bf2c4de3dc6b4` and verified with a pinned Action in source [run 40119258974](https://github.com/MergeLatch/mergelatch/actions/runs/40119258974) and consumer [run 40120225597](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40120225597).** Independent security sign-off and release remain pending; future implementation changes require the targeted re-verification in [RELEASE_PLAN.md](RELEASE_PLAN.md).
 
 ### F-03. Oversized reports
 
@@ -259,7 +270,7 @@ See the table. F-04 and F-05 are the main reasons the Action must not be used as
 | ID | Question | Recommendation of this review | Cost |
 | --- | --- | --- | --- |
 | D-1 | Accept only `pull_request`? | Yes, before `v0.1.0-rc.1`: it makes the code match the documentation and removes the ambiguity in F-01. **Decided, implemented and verified as a pinned Action; awaiting independent review** | Changes `mergelatch_action.py`; new SHA; targeted re-verification |
-| D-2 | Treat `unavailable` as an error on `pull_request`, or read `.git` from the workspace root? | Both: implemented on branch `fix/action-fail-closed-revision` (error, with a root `HEAD` fallback for subdirectories). Awaiting review, merge, and pinned-SHA verification | Changed the helper only; re-verification |
+| D-2 | Treat `unavailable` as an error on `pull_request`, or read `.git` from the workspace root? | Both: merged as `95bad26bc731caa913861e95f75bf2c4de3dc6b4` in PR #18 and verified by source and separate consumer pinned GitHub runs; independent human review and release still pending | Changed the helper only; re-verification |
 | D-3 | Cap findings in the scanner? | Optional | Changes the scanner; re-verification |
 | D-4 | Is building from crates.io and rustup on every run acceptable for a first release, or should a checksummed prebuilt binary be released? | Reviewer's judgment; this review accepts it for an advisory trial | Release engineering |
 
@@ -287,7 +298,7 @@ A release candidate tag must not be created until all of these are closed:
 4. **F-05 and F-07 are confirmed or dismissed** by the reviewer (F-08 was confirmed and fixed on a branch; the fix is awaiting review).
 5. **The reviewer's checklist items below are answered** and any resulting defect is fixed through the private vulnerability process if it is exploitable.
 
-Not blockers, but should be tracked: D-2, D-3, D-4, `cargo audit` in CI, and a test of a pull request that edits the workflow.
+Not blockers, but should be tracked: further D-2 verification if the implementation changes, D-3, D-4, `cargo audit` in CI, and a test of a pull request that edits the workflow.
 
 ## Reviewer checklist
 
