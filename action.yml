@@ -51,44 +51,67 @@ outputs:
   action-pinned:
     description: 'true when the Action was referenced by a full 40-character commit SHA.'
     value: ${{ steps.report.outputs.action-pinned }}
+  ignored-environment-count:
+    description: >-
+      Number of inherited build settings (for example CARGO_HOME or BASH_ENV)
+      that were present in the environment and ignored. The scanner is always
+      built in an environment assembled from fixed values.
+    value: ${{ steps.report.outputs.ignored-environment-count }}
 runs:
   using: composite
+  # Every step runs under /usr/bin/python3 -I, by absolute path, and not under
+  # bash: bash would read BASH_ENV (and the PATH could redirect `bash` itself)
+  # before the first line of the Action. Python's isolated mode ignores the
+  # PYTHON* variables and the working directory. Each step is a fixed
+  # bootstrap that runs the trusted helper with one command.
   steps:
-    - name: Validate inputs and the checkout
+    - name: Validate the runner, inputs, and checkout
       id: prepare
-      shell: bash
+      shell: /usr/bin/python3 -I {0}
       env:
         MLA_INPUT_SCAN_DIRECTORY: ${{ inputs.scan-directory }}
         MLA_INPUT_MAX_FINDINGS: ${{ inputs.max-findings-in-summary }}
         MLA_ACTION_PATH: ${{ github.action_path }}
         MLA_WORKSPACE: ${{ github.workspace }}
         MLA_EVENT_NAME: ${{ github.event_name }}
-      run: python3 -I "$MLA_ACTION_PATH/action/mergelatch_action.py" prepare
+        MLA_RUNNER_OS: ${{ runner.os }}
+        MLA_RUNNER_ARCH: ${{ runner.arch }}
+        MLA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      run: |
+        import os, runpy, sys
+        sys.argv = ["mergelatch_action.py", "prepare"]
+        runpy.run_path(os.path.join(os.environ["MLA_ACTION_PATH"], "action", "mergelatch_action.py"), run_name="__main__")
 
     - name: Build the scanner from the Action source
       id: build
       if: steps.prepare.outputs.ok == 'true'
       continue-on-error: true
-      shell: bash
+      shell: /usr/bin/python3 -I {0}
       env:
         MLA_ACTION_ROOT: ${{ steps.prepare.outputs.action-root }}
         MLA_STATE_DIR: ${{ steps.prepare.outputs.state-dir }}
         MLA_ACTION_PATH: ${{ github.action_path }}
-      run: bash "$MLA_ACTION_PATH/action/build.sh"
+      run: |
+        import os, runpy, sys
+        sys.argv = ["mergelatch_action.py", "build"]
+        runpy.run_path(os.path.join(os.environ["MLA_ACTION_PATH"], "action", "mergelatch_action.py"), run_name="__main__")
 
     - name: Scan the checkout
       id: scan
       if: always() && steps.prepare.outputs.ok == 'true'
-      shell: bash
+      shell: /usr/bin/python3 -I {0}
       env:
         MLA_STATE_DIR: ${{ steps.prepare.outputs.state-dir }}
         MLA_ACTION_PATH: ${{ github.action_path }}
-      run: python3 -I "$MLA_ACTION_PATH/action/mergelatch_action.py" scan
+      run: |
+        import os, runpy, sys
+        sys.argv = ["mergelatch_action.py", "scan"]
+        runpy.run_path(os.path.join(os.environ["MLA_ACTION_PATH"], "action", "mergelatch_action.py"), run_name="__main__")
 
     - name: Report
       id: report
       if: always()
-      shell: bash
+      shell: /usr/bin/python3 -I {0}
       env:
         MLA_STATE_DIR: ${{ steps.prepare.outputs.state-dir }}
         MLA_ACTION_PATH: ${{ github.action_path }}
@@ -102,4 +125,7 @@ runs:
         MLA_RUN_ATTEMPT: ${{ github.run_attempt }}
         MLA_ACTION_REF: ${{ github.action_ref }}
         MLA_ACTION_REPOSITORY: ${{ github.action_repository }}
-      run: python3 -I "$MLA_ACTION_PATH/action/mergelatch_action.py" report
+      run: |
+        import os, runpy, sys
+        sys.argv = ["mergelatch_action.py", "report"]
+        runpy.run_path(os.path.join(os.environ["MLA_ACTION_PATH"], "action", "mergelatch_action.py"), run_name="__main__")

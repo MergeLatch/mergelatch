@@ -28,17 +28,22 @@ def uncommented(text):
 
 
 class ActionMetadata(unittest.TestCase):
-    def test_it_is_a_composite_action_and_every_step_names_its_shell(self):
+    def test_it_is_a_composite_action_and_every_step_runs_under_an_absolute_python_shell(self):
         self.assertIn("using: composite", ACTION_YML)
         steps = re.findall(r"(?m)^    - ", ACTION_YML)
-        self.assertEqual(len(steps), len(re.findall(r"(?m)^      shell: bash$", ACTION_YML)))
         self.assertEqual(len(steps), 4)
+        # Never bash: bash reads BASH_ENV before the first line of a step, and
+        # a relative shell name would be looked up on a PATH the workflow controls.
+        self.assertNotRegex(uncommented(ACTION_YML), r"(?m)^\s+shell: (?!/usr/bin/python3 -I \{0\}$)")
+        self.assertEqual(len(re.findall(r"(?m)^      shell: /usr/bin/python3 -I \{0\}$", ACTION_YML)), 4)
 
     def test_no_expression_is_ever_placed_in_a_run_command(self):
-        for line in ACTION_YML.splitlines():
-            if line.lstrip().startswith("run:"):
-                self.assertNotIn("${{", line)
-                self.assertIn('"$MLA_ACTION_PATH/action/', line)
+        runs = re.findall(r"(?m)^      run: \|\n((?:        .*\n)+)", ACTION_YML)
+        self.assertEqual(len(runs), 4)
+        for body in runs:
+            self.assertNotIn("${{", body)
+            self.assertIn('runpy.run_path(os.path.join(os.environ["MLA_ACTION_PATH"], "action", "mergelatch_action.py")', body)
+            self.assertEqual(len(body.splitlines()), 3)
 
     def test_inputs_and_context_reach_scripts_only_through_env(self):
         for number, line in enumerate(ACTION_YML.splitlines(), 1):

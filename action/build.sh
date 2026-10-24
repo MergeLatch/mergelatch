@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
 # Builds the MergeLatch scanner from the Action's own source directory.
 #
+# Do not run this directly. It is started by `mergelatch_action.py build`, which
+# gives it an environment assembled from fixed values (see trusted_environment
+# in that file). That, and not a list of variables to unset, is what keeps
+# BASH_ENV, CARGO_HOME, linker and compiler overrides, and rustup settings out
+# of the build.
+#
 # MLA_ACTION_ROOT is the directory the Action was loaded into. When consumers
 # pin the Action to a full commit SHA, that is a checkout of MergeLatch at that
 # SHA, separate from the repository being scanned. The scanned repository is
 # never read, built, or consulted here.
 set -euo pipefail
 
+if [[ "${MLA_CONTROLLED_ENV:-}" != "1" ]]; then
+  echo "::error title=MergeLatch advisory scan::build.sh must be started by the Action helper, which provides a controlled environment" >&2
+  exit 1
+fi
+
 : "${MLA_ACTION_ROOT:?MLA_ACTION_ROOT is required}"
 : "${MLA_STATE_DIR:?MLA_STATE_DIR is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
+: "${CARGO_HOME:?CARGO_HOME is required}"
 
-# Configuration that could redirect the build or the toolchain must come from
-# the Action checkout, not from the surrounding environment.
-unset RUSTUP_TOOLCHAIN RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER RUSTFLAGS \
-  CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS CARGO_BUILD_RUSTC \
-  CARGO_BUILD_RUSTC_WRAPPER CARGO_BUILD_TARGET CARGO_BUILD_TARGET_DIR \
-  CARGO_TARGET_DIR RUSTDOCFLAGS
+# The tools must come from the trusted Rust installation.
+for tool in rustup cargo; do
+  found="$(command -v "${tool}" || true)"
+  if [[ "${found}" != "${CARGO_HOME}/bin/${tool}" ]]; then
+    echo "::error title=MergeLatch advisory scan::${tool} was not found in the trusted Rust installation" >&2
+    exit 1
+  fi
+done
 
 target_dir="${RUNNER_TEMP}/mergelatch-cargo-target"
 

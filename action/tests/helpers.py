@@ -122,14 +122,22 @@ class Workspace:
             (self.action / name).write_text("")
         self.tmp = self.root / "tmp"
         self.tmp.mkdir()
+        # A fixed os-release so the tests do not depend on the machine they run on.
+        self.os_release = self.root / "os-release"
+        self.os_release.write_text('NAME="Ubuntu"\nID=ubuntu\n')
+        self._saved_os_release = mla.OS_RELEASE_PATH
+        mla.OS_RELEASE_PATH = str(self.os_release)
 
     def cleanup(self):
+        mla.OS_RELEASE_PATH = self._saved_os_release
         self._tmp.cleanup()
 
     def env(self, **extra):
         env = github_env(self.tmp,
                          MLA_WORKSPACE=str(self.workspace),
                          MLA_ACTION_PATH=str(self.action),
-                         MLA_EVENT_NAME="pull_request")
+                         MLA_EVENT_NAME="pull_request",
+                         MLA_RUNNER_OS="Linux", MLA_RUNNER_ARCH="X64",
+                         MLA_RUNNER_ENVIRONMENT="github-hosted")
         env.update(extra)
         return env

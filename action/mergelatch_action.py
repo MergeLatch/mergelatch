@@ -8,7 +8,8 @@ to the scanner binary as a path argument.
 Commands (selected by the first argument, configuration comes from environment
 variables so that no untrusted text is ever placed in a shell command):
 
-  prepare  validate inputs and the checkout, create a private state directory
+  prepare  validate the runner, environment, inputs and checkout; create a state directory
+  build    build the scanner from the Action directory in a controlled environment
   scan     run the scanner on the validated directory and keep its raw output
   report   validate the scanner output, write outputs and the job summary
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import re
 import resource
 import string
@@ -53,6 +55,24 @@ RULE_ID = re.compile(r"\A[A-Z0-9-]{1,32}\Z")
 # Events on which this Action refuses to run. Both give the workflow secrets
 # or a write-capable token, which an untrusted checkout must never share.
 PRIVILEGED_EVENTS = ("pull_request_target", "workflow_run")
+
+BUILD_TIMEOUT_SECONDS = 1500
+OS_RELEASE_PATH = "/etc/os-release"
+
+# Variables that make the dynamic loader or C library load code into every
+# process, including this one, before any line of the Action runs. They cannot
+# be undone from inside the Action, so their presence is a hard error.
+LOADER_VARIABLE_PREFIXES = ("LD_",)
+LOADER_VARIABLES = ("GCONV_PATH",)
+
+# Used only to tell the user which inherited build settings were ignored. The
+# protection does not depend on this list: child processes get an environment
+# built from scratch (see trusted_environment).
+BUILD_SETTING_NAMES = re.compile(
+    r"\A(CARGO|RUSTUP|RUSTC|RUSTFLAGS|RUSTDOC|BASH_ENV\Z|ENV\Z|BASH_FUNC|SHELLOPTS|BASHOPTS|"
+    r"CC\Z|CXX\Z|AR\Z|CFLAGS|CXXFLAGS|LDFLAGS|PYTHON)"
+)
+VARIABLE_NAME = re.compile(r"\A[A-Z0-9_]{1,80}\Z")
 
 
 class ActionError(Exception):
@@ -148,6 +168,89 @@ def write_summary(env: dict, text: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# The trusted environment
+# --------------------------------------------------------------------------
+#
+# Every step of this Action runs under `/usr/bin/python3 -I`, not under bash, so
+# BASH_ENV, ENV, and other shell start-up settings are never read. Child
+# processes (the build and the scanner) are started with an environment that is
+# assembled here from fixed values, not filtered from what the workflow passed
+# in. Nothing that could point cargo, rustup, a compiler, or a shell at files in
+# the scanned checkout is carried over.
+
+def trusted_home() -> str:
+    """The runner user's home directory from the account database, not from
+    the HOME variable, which a workflow can change."""
+    try:
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError as exc:
+        raise ActionError("the runner user has no home directory") from exc
+    if not home.startswith("/") or not os.path.isdir(home):
+        raise ActionError("the runner user's home directory is not usable")
+    return home
+
+
+def trusted_environment(extra: dict | None = None, home: str | None = None) -> dict:
+    """The complete environment for a child process."""
+    home = home or trusted_home()
+    cargo_home = os.path.join(home, ".cargo")
+    env = {
+        "PATH": ":".join([os.path.join(cargo_home, "bin"), "/usr/local/sbin", "/usr/local/bin",
+                          "/usr/sbin", "/usr/bin", "/sbin", "/bin"]),
+        "HOME": home,
+        "CARGO_HOME": cargo_home,
+        "RUSTUP_HOME": os.path.join(home, ".rustup"),
+        "LANG": "C.UTF-8",
+    }
+    env.update(extra or {})
+    return env
+
+
+def check_inherited_environment(env: dict) -> None:
+    """Refuses to run when the environment already loads code that this Action
+    cannot keep out of its own process."""
+    bad = sorted(name for name in env
+                 if name.startswith(LOADER_VARIABLE_PREFIXES) or name in LOADER_VARIABLES)
+    if bad:
+        raise ActionError(
+            "the inherited environment sets %s, which loads code into every process this Action "
+            "starts and cannot be neutralized; remove it from the workflow" %
+            ", ".join(plain(name, 40) for name in bad[:5])
+        )
+
+
+def ignored_build_settings(env: dict, home: str) -> list:
+    """Names of inherited build settings that the trusted environment replaces."""
+    expected = {"CARGO_HOME": os.path.join(home, ".cargo"), "RUSTUP_HOME": os.path.join(home, ".rustup")}
+    names = []
+    for name, value in env.items():
+        if not BUILD_SETTING_NAMES.match(name) or not VARIABLE_NAME.match(name):
+            continue
+        if name in expected and value == expected[name]:
+            continue
+        names.append(name)
+    return sorted(names)[:50]
+
+
+def check_runner(env: dict, os_release: str | None = None) -> None:
+    """Refuses runners other than GitHub-hosted Ubuntu on x86-64, the only
+    combination on which the scanner's file confinement has been verified."""
+    if env.get("MLA_RUNNER_OS") != "Linux":
+        raise ActionError("only Linux runners are supported")
+    if env.get("MLA_RUNNER_ENVIRONMENT") != "github-hosted":
+        raise ActionError("only GitHub-hosted runners are supported")
+    if env.get("MLA_RUNNER_ARCH") != "X64":
+        raise ActionError("only x86-64 runners are supported")
+    try:
+        with open(os_release or OS_RELEASE_PATH, encoding="utf-8") as handle:
+            ids = [line.strip() for line in handle if line.startswith("ID=")]
+    except OSError:
+        ids = []
+    if ids != ["ID=ubuntu"]:
+        raise ActionError("only Ubuntu runner images are supported")
+
+
+# --------------------------------------------------------------------------
 # prepare
 # --------------------------------------------------------------------------
 
@@ -178,6 +281,8 @@ def prepare(env: dict) -> int:
     os.chmod(state_dir, 0o700)
     state: dict = {"error": None, "scan_dir": None}
     try:
+        check_runner(env)
+        check_inherited_environment(env)
         workspace_raw = env.get("MLA_WORKSPACE", "")
         if not workspace_raw or not os.path.isdir(workspace_raw):
             raise ActionError("the workspace directory is missing")
@@ -196,6 +301,7 @@ def prepare(env: dict) -> int:
                 raise ActionError("the Action directory does not contain the scanner source")
         state["action_root"] = action_root
         state["scanner_source"] = "workspace" if _inside(action_root, workspace) else "action-checkout"
+        state["ignored_env"] = ignored_build_settings(env, trusted_home())
 
         raw_max = env.get("MLA_INPUT_MAX_FINDINGS", "") or str(DEFAULT_MAX_FINDINGS)
         if not DIGITS.match(raw_max) or not 1 <= int(raw_max) <= 100:
@@ -223,16 +329,6 @@ def prepare(env: dict) -> int:
 # scan
 # --------------------------------------------------------------------------
 
-def _scrubbed_env() -> dict:
-    """The scanner needs nothing from the workflow environment, so none of it,
-    including tokens, is passed on."""
-    return {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/"),
-        "LANG": "C.UTF-8",
-    }
-
-
 def _limit_output() -> None:
     resource.setrlimit(resource.RLIMIT_FSIZE, (SCANNER_OUTPUT_LIMIT, SCANNER_OUTPUT_LIMIT))
 
@@ -243,6 +339,45 @@ def load_state(state_dir: str) -> dict:
     if not isinstance(state, dict):
         raise ActionError("the state file is invalid")
     return state
+
+
+def build(env: dict, home: str | None = None) -> int:
+    """Builds the scanner with a controlled environment.
+
+    The build script is started by absolute path under a fresh environment, so
+    nothing the workflow exported (BASH_ENV, CARGO_HOME, linker or compiler
+    overrides, rustup settings) reaches cargo, rustup, or the shell.
+    """
+    action_root = env.get("MLA_ACTION_ROOT", "")
+    state_dir = env.get("MLA_STATE_DIR", "")
+    runner_temp = env.get("RUNNER_TEMP", "")
+    for label, value in (("action directory", action_root), ("state directory", state_dir),
+                         ("runner temp directory", runner_temp)):
+        if not value.startswith("/") or not os.path.isdir(value):
+            raise ActionError("the %s is missing" % label)
+    home = home or trusted_home()
+    cargo_bin = os.path.join(home, ".cargo", "bin")
+    for tool in ("rustup", "cargo"):
+        if not os.access(os.path.join(cargo_bin, tool), os.X_OK):
+            raise ActionError("%s was not found in the trusted Rust installation (%s)" % (tool, cargo_bin))
+    bash = next((p for p in ("/usr/bin/bash", "/bin/bash") if os.access(p, os.X_OK)), None)
+    if bash is None:
+        raise ActionError("bash was not found at a trusted location")
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build.sh")
+    child = trusted_environment({
+        "RUNNER_TEMP": runner_temp,
+        "MLA_ACTION_ROOT": action_root,
+        "MLA_STATE_DIR": state_dir,
+        "MLA_CONTROLLED_ENV": "1",
+    }, home)
+    try:
+        result = subprocess.run([bash, "--noprofile", "--norc", script], cwd=action_root, env=child,
+                                stdin=subprocess.DEVNULL, timeout=BUILD_TIMEOUT_SECONDS, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise ActionError("the scanner build exceeded its time limit") from exc
+    except OSError as exc:
+        raise ActionError("the scanner build could not be started: %s" % exc.strerror) from exc
+    return result.returncode
 
 
 def scan(env: dict) -> int:
@@ -263,7 +398,7 @@ def scan(env: dict) -> int:
             result = subprocess.run(
                 argv,
                 cwd=state_dir,
-                env=_scrubbed_env(),
+                env=trusted_environment(),
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=err,
@@ -541,7 +676,7 @@ def _source_label(source: str, context: dict) -> str:
 
 
 def build_summary(result: dict, context: dict, source: str, max_findings: int,
-                  toolchain: str | None) -> str:
+                  toolchain: str | None, ignored: tuple | list = ()) -> str:
     status = result["status"]
     lines = ["### MergeLatch advisory scan: %s" % _HEADLINE[status], "", _DISCLAIMER, ""]
     report = result["report"]
@@ -573,6 +708,10 @@ def build_summary(result: dict, context: dict, source: str, max_findings: int,
             ("Revision check", _revision_label(result["revision_check"])),
             ("Scanner source", _source_label(source, context)),
             ("Rust toolchain", md(toolchain or "unknown", 60))]
+    if ignored:
+        names = ", ".join(md(name, 40) for name in ignored[:10])
+        more = " and %d more" % (len(ignored) - 10) if len(ignored) > 10 else ""
+        rows.append(("Inherited build settings ignored", names + more))
     if report:
         rows[:0] = [
             ("Scanner version", md(report["scanner"]["version"], 40)),
@@ -676,6 +815,7 @@ def report_command(env: dict) -> int:
         ("ruleset", "%s-%s" % (report["ruleset"]["id"], report["ruleset"]["version"]) if report else ""),
         ("scanner-source", source),
         ("action-pinned", pinned),
+        ("ignored-environment-count", str(len(state.get("ignored_env") or []))),
     ]
     failures: list = []
     for name, value in outputs:
@@ -684,7 +824,8 @@ def report_command(env: dict) -> int:
         except ActionError as exc:
             failures.append(str(exc))
     try:
-        write_summary(env, build_summary(result, context, source, max_findings, toolchain))
+        write_summary(env, build_summary(result, context, source, max_findings, toolchain,
+                                         state.get("ignored_env") or []))
     except ActionError as exc:
         failures.append(str(exc))
 
@@ -707,9 +848,9 @@ def report_command(env: dict) -> int:
 
 def main(argv: list, env: dict | None = None) -> int:
     env = dict(os.environ) if env is None else env
-    commands = {"prepare": prepare, "scan": scan, "report": report_command}
+    commands = {"prepare": prepare, "build": build, "scan": scan, "report": report_command}
     if len(argv) != 2 or argv[1] not in commands:
-        print("usage: mergelatch_action.py prepare|scan|report", file=sys.stderr)
+        print("usage: mergelatch_action.py prepare|build|scan|report", file=sys.stderr)
         return 2
     try:
         return commands[argv[1]](env)

@@ -256,49 +256,90 @@ class Scan(unittest.TestCase):
 
 
 class BuildScript(unittest.TestCase):
-    """Runs build.sh with fake rustup, cargo and rustc to see how they are called."""
+    """Runs the build step with fake rustup, cargo and rustc in a fake home.
+
+    The fake tools record how they were called, including their complete
+    environment, so these tests show exactly what the build is given.
+    """
 
     def setUp(self):
         self.ws = Workspace()
         self.addCleanup(self.ws.cleanup)
-        self.bin = self.ws.root / "bin"
-        self.bin.mkdir()
+        self.home = self.ws.root / "home"
+        self.cargo_bin = self.home / ".cargo" / "bin"
+        self.cargo_bin.mkdir(parents=True)
         self.log = self.ws.root / "calls.log"
+        record = (
+            'printf "%%s|cwd=%%s|args=%%s\\n" "%s" "$(pwd)" "$*" >> %s\n'
+            'env | sort > %s.$$.%s.env\n'
+        )
         for tool in ("rustup", "cargo"):
-            make_executable(
-                self.bin / tool,
-                'printf "%%s|cwd=%%s|target=%%s|toolchain=%%s|flags=%%s|wrapper=%%s|args=%%s\\n" '
-                '"%s" "$(pwd)" "${CARGO_TARGET_DIR-}" "${RUSTUP_TOOLCHAIN-}" "${RUSTFLAGS-}" '
-                '"${RUSTC_WRAPPER-}" "$*" >> %s\n' % (tool, self.log),
-            )
-        make_executable(self.bin / "rustc", 'echo "rustc 1.99.1 (fake)"\n')
+            make_executable(self.cargo_bin / tool, record % (tool, self.log, self.ws.root / "env", tool))
+        make_executable(self.cargo_bin / "rustc", 'echo "rustc 1.99.1 (fake)"\n')
         self.state = self.ws.root / "state"
         self.state.mkdir()
 
-    def run_build(self, **extra):
+    def build_env(self, **extra):
         env = {
-            "PATH": "%s:%s" % (self.bin, os.environ["PATH"]),
-            "HOME": os.environ["HOME"],
             "RUNNER_TEMP": str(self.ws.tmp),
             "MLA_ACTION_ROOT": str(self.ws.action),
             "MLA_STATE_DIR": str(self.state),
         }
         env.update(extra)
-        return subprocess.run(["bash", str(BUILD_SH)], env=env, capture_output=True, text=True, cwd=str(self.ws.workspace))
+        return env
+
+    def run_build(self, **extra):
+        return mla.build(self.build_env(**extra), home=str(self.home))
+
+    def recorded_env(self, tool):
+        files = sorted(self.ws.root.glob("env.*.%s.env" % tool))
+        self.assertEqual(len(files), 1, files)
+        return dict(line.split("=", 1) for line in files[0].read_text().splitlines() if "=" in line)
 
     def test_builds_from_the_action_directory_with_a_locked_release_build(self):
-        result = self.run_build()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.run_build(), 0)
         calls = self.log.read_text().splitlines()
         self.assertEqual(len(calls), 2)
-        self.assertTrue(calls[0].startswith("rustup|cwd=%s|" % self.ws.action))
-        self.assertIn("args=toolchain install --no-self-update", calls[0])
-        self.assertTrue(calls[1].startswith("cargo|cwd=%s|" % self.ws.action))
-        self.assertIn("args=build --locked --release -p mergelatch-cli", calls[1])
-        self.assertIn("target=%s/mergelatch-cargo-target|" % self.ws.tmp, calls[1])
+        self.assertEqual(calls[0], "rustup|cwd=%s|args=toolchain install --no-self-update" % self.ws.action)
+        self.assertEqual(calls[1], "cargo|cwd=%s|args=build --locked --release -p mergelatch-cli" % self.ws.action)
         self.assertEqual((self.state / "binary-path.txt").read_text().strip(),
                          "%s/mergelatch-cargo-target/release/mergelatch" % self.ws.tmp)
         self.assertIn("rustc 1.99.1", (self.state / "rustc-version.txt").read_text())
+
+    def test_the_build_gets_an_environment_built_from_fixed_values(self):
+        self.assertEqual(self.run_build(), 0)
+        env = self.recorded_env("cargo")
+        self.assertEqual(env["HOME"], str(self.home))
+        self.assertEqual(env["CARGO_HOME"], str(self.home / ".cargo"))
+        self.assertEqual(env["RUSTUP_HOME"], str(self.home / ".rustup"))
+        self.assertEqual(env["PATH"].split(":")[0], str(self.cargo_bin))
+        self.assertEqual(env["CARGO_TARGET_DIR"], "%s/mergelatch-cargo-target" % self.ws.tmp)
+        allowed = {"HOME", "CARGO_HOME", "RUSTUP_HOME", "PATH", "LANG", "RUNNER_TEMP", "MLA_ACTION_ROOT",
+                   "MLA_STATE_DIR", "MLA_CONTROLLED_ENV", "CARGO_TARGET_DIR", "PWD", "SHLVL", "_", "OLDPWD"}
+        self.assertEqual(set(env) - allowed, set(), "unexpected variables reached cargo")
+
+    def test_hostile_variables_in_the_calling_process_never_reach_the_build(self):
+        hostile = {
+            "BASH_ENV": "/workspace/evil.sh", "ENV": "/workspace/evil.sh", "CARGO_HOME": "/workspace/evil-cargo",
+            "RUSTUP_HOME": "/workspace/evil-rustup", "RUSTUP_DIST_SERVER": "http://evil.invalid",
+            "RUSTUP_TOOLCHAIN": "evil", "RUSTC_WRAPPER": "/workspace/evil", "RUSTFLAGS": "-Cevil",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "/workspace/evil-linker",
+            "CARGO_BUILD_RUSTC": "/workspace/evil", "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "evil",
+            "CC": "/workspace/evil", "PATH": "/workspace/bin:/usr/bin", "HOME": "/workspace/home",
+            "SHELLOPTS": "xtrace", "BASHOPTS": "x", "LD_PRELOAD": "/workspace/evil.so",
+        }
+        old = dict(os.environ)
+        os.environ.update(hostile)
+        try:
+            self.assertEqual(self.run_build(), 0)
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+        for tool in ("rustup", "cargo"):
+            env = self.recorded_env(tool)
+            for name, value in hostile.items():
+                self.assertNotIn("/workspace", env.get(name, ""), (tool, name))
+            self.assertNotIn("evil", " ".join(env.values()))
 
     def test_the_scanned_directory_is_never_the_working_directory_or_an_argument(self):
         hostile = self.ws.workspace / "hostile"
@@ -306,34 +347,55 @@ class BuildScript(unittest.TestCase):
         (hostile / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "0.0.1"\n')
         (hostile / "Cargo.toml").write_text("[package]\nname='x'\n")
         (hostile / ".cargo" / "config.toml").write_text("[build]\nrustc = 'false'\n")
-        result = self.run_build(MLA_SCAN_DIRECTORY=str(hostile))
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.run_build(MLA_SCAN_DIRECTORY=str(hostile)), 0)
         text = self.log.read_text()
         self.assertNotIn("hostile", text)
         self.assertNotIn(str(self.ws.workspace), text)
 
-    def test_environment_that_could_redirect_the_build_is_cleared(self):
-        result = self.run_build(RUSTUP_TOOLCHAIN="evil", RUSTFLAGS="-Cevil", RUSTC_WRAPPER="/tmp/evil",
-                                CARGO_TARGET_DIR="/tmp/elsewhere")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for call in self.log.read_text().splitlines():
-            self.assertIn("toolchain=|flags=|wrapper=|", call)
-        self.assertNotIn("/tmp/elsewhere", self.log.read_text())
-
-    def test_a_failing_build_fails_the_script_and_leaves_no_binary_path(self):
-        make_executable(self.bin / "cargo", "exit 101\n")
-        result = self.run_build()
-        self.assertNotEqual(result.returncode, 0)
+    def test_a_failing_build_fails_and_leaves_no_binary_path(self):
+        make_executable(self.cargo_bin / "cargo", "exit 101\n")
+        self.assertNotEqual(self.run_build(), 0)
         self.assertFalse((self.state / "binary-path.txt").exists())
+
+    def test_missing_trusted_tools_are_a_clear_operational_error(self):
+        (self.cargo_bin / "cargo").unlink()
+        with self.assertRaises(mla.ActionError) as caught:
+            self.run_build()
+        self.assertIn("cargo was not found in the trusted Rust installation", str(caught.exception))
+        # A tool that is only on PATH somewhere else is not accepted.
+        elsewhere = self.ws.root / "elsewhere"
+        elsewhere.mkdir()
+        make_executable(elsewhere / "cargo", "exit 0\n")
+        with self.assertRaises(mla.ActionError):
+            mla.build(self.build_env(PATH=str(elsewhere)), home=str(self.home))
 
     def test_required_variables_are_enforced(self):
         for name in ("MLA_ACTION_ROOT", "MLA_STATE_DIR", "RUNNER_TEMP"):
-            env = {"PATH": "%s:%s" % (self.bin, os.environ["PATH"]), "HOME": os.environ["HOME"],
-                   "RUNNER_TEMP": str(self.ws.tmp), "MLA_ACTION_ROOT": str(self.ws.action),
-                   "MLA_STATE_DIR": str(self.state)}
+            env = self.build_env()
             del env[name]
-            result = subprocess.run(["bash", str(BUILD_SH)], env=env, capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0, name)
+            with self.assertRaises(mla.ActionError, msg=name):
+                mla.build(env, home=str(self.home))
+
+    def test_build_sh_refuses_to_run_outside_the_controlled_environment(self):
+        result = subprocess.run(["bash", str(BUILD_SH)], capture_output=True, text=True,
+                                env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(self.ws.tmp),
+                                     "MLA_ACTION_ROOT": str(self.ws.action), "MLA_STATE_DIR": str(self.state)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("controlled environment", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_build_sh_rejects_tools_that_are_not_from_cargo_home(self):
+        elsewhere = self.ws.root / "elsewhere"
+        elsewhere.mkdir()
+        for tool in ("rustup", "cargo"):
+            make_executable(elsewhere / tool, "exit 0\n")
+        result = subprocess.run(
+            ["bash", str(BUILD_SH)], capture_output=True, text=True,
+            env={"PATH": "%s:%s" % (elsewhere, os.environ["PATH"]), "RUNNER_TEMP": str(self.ws.tmp),
+                 "MLA_ACTION_ROOT": str(self.ws.action), "MLA_STATE_DIR": str(self.state),
+                 "MLA_CONTROLLED_ENV": "1", "CARGO_HOME": str(self.home / ".cargo")})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("trusted Rust installation", result.stderr)
 
 
 if __name__ == "__main__":
