@@ -26,7 +26,7 @@ env:
   ACTION_YML_SHA256: 7af64d3db3335b0dbef51c54a6b06a9c444a70a3092162a224ebd6bfdbb47f3f
   HELPER_SHA256: d4384cac97a54d8d8bee7a0e1c8aefaf85138a6175bcf3ee2a784c3120a2ea4f
   BUILD_SH_SHA256: 05b93ff6ae321c7e93f1fe8c694bd752e7844482906bb1a51cb5deeec331d138
-  CARGO_LOCK_SHA256: 0080ec065c655c4478d7135f84666b9aa0de1e6db6c418dfc39e01a461dde053
+  LOCKFILE_SHA256: 0080ec065c655c4478d7135f84666b9aa0de1e6db6c418dfc39e01a461dde053
 
 jobs:
   trial:
@@ -160,7 +160,7 @@ jobs:
           check action.yml "${ACTION_YML_SHA256}"
           check action/mergelatch_action.py "${HELPER_SHA256}"
           check action/build.sh "${BUILD_SH_SHA256}"
-          check Cargo.lock "${CARGO_LOCK_SHA256}"
+          check Cargo.lock "${LOCKFILE_SHA256}"
           [ -d "${action_dir}/crates/core/src" ] || fail "scanner source missing from the Action directory"
 
           # 2. Provenance reported by the Action itself.
@@ -199,19 +199,6 @@ jobs:
             fail "a hostile file or setting ran"
           fi
           [ -e "${WORKSPACE}/fixtures/action-hostile/CONTROL_BASH_ENV_RAN" ] || fail "the BASH_ENV control did not run"
-
-      # The job summaries are rendered by GitHub and are not available through
-      # the API, so print the headline and provenance rows of each one that the
-      # runner still holds. They come from escaped Action output on inert fixtures.
-      - name: Show the headline and provenance rows of the Action summaries
-        if: always()
-        run: |
-          set -u
-          shopt -s nullglob
-          for f in "${RUNNER_TEMP}"/_runner_file_commands/step_summary_*; do
-            echo "== $(basename "${f}") ($(wc -c < "${f}") bytes)"
-            grep -hE '^### |^\*\*|Scanner source|Revision check|Scanner version|^\| Ruleset|Expected merge|Scanned revision|Action revision|Inherited build' "${f}" | cut -c1-200 | sed 's/^::/: :/'
-          done
 
       - name: Record what was tested
         if: always()
