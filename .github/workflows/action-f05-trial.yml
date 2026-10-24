@@ -160,6 +160,7 @@ jobs:
             printf '#!/usr/bin/bash\ntouch "%s/markers/path-%s"\nexit 1\n' "${lab}" "${tool}" > "${lab}/bin/${tool}"
             chmod +x "${lab}/bin/${tool}"
           done
+          # shellcheck disable=SC2016  # $0 is meant to be expanded later, by the shell that reads the file
           # Logs every shell that reads it. The job's own bash steps will read it too; what matters is whether the Action does.
           printf 'printf "%%s\\n" "$0" >> "%s/markers/bash-env.log"\n' "${lab}" > "${lab}/bash_env.sh"
           printf '#!/usr/bin/bash\ntouch "%s/markers/rustc-wrapper"\nexec "$@"\n' "${lab}" > "${lab}/wrapper.sh"
