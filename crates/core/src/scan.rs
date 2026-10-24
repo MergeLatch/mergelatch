@@ -3,11 +3,15 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
+
 use crate::discover::discover_workflows;
+use crate::fsaccess::CONFINEMENT_VERIFIED;
+use crate::revision::read_revision_from;
 use crate::rules::check_workflow;
 use crate::{
     Incomplete, IncompleteKind, Report, Revision, RulesetInfo, ScanLimits, Target, builtin_rules,
-    read_revision,
 };
 
 pub const RULESET_ID: &str = "mergelatch-builtin";
@@ -19,12 +23,19 @@ pub const RULESET_VERSION: &str = "1";
 pub enum ScanError {
     /// The target does not exist, is not a directory, or cannot be resolved.
     InvalidTarget(String),
+    /// This platform has no verified confined-access backend, so the scan
+    /// refuses to run rather than open paths unsafely.
+    UnsupportedPlatform,
 }
 
 impl fmt::Display for ScanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ScanError::InvalidTarget(msg) => write!(f, "invalid scan target: {msg}"),
+            ScanError::UnsupportedPlatform => write!(
+                f,
+                "unsupported platform: race-resistant filesystem confinement is only verified on Linux"
+            ),
         }
     }
 }
@@ -36,7 +47,7 @@ impl std::error::Error for ScanError {}
 /// Files are read as data. Nothing in the directory is executed, and Git is
 /// not run.
 pub fn scan_directory(root: &Path, limits: &ScanLimits) -> Result<Report, ScanError> {
-    scan_with(root, limits, read_revision, Instant::now)
+    scan_with(root, limits, read_revision_from, Instant::now)
 }
 
 /// The scan itself, with the revision reader and clock supplied so tests can
@@ -45,7 +56,7 @@ pub fn scan_directory(root: &Path, limits: &ScanLimits) -> Result<Report, ScanEr
 fn scan_with(
     root: &Path,
     limits: &ScanLimits,
-    revision: impl FnOnce(&Path) -> Option<Revision>,
+    revision: impl FnOnce(&Dir) -> Option<Revision>,
     now: impl Fn() -> Instant,
 ) -> Result<Report, ScanError> {
     let started = now();
@@ -53,18 +64,18 @@ fn scan_with(
     let deadline = started
         .checked_add(limits.timeout)
         .unwrap_or_else(|| started + Duration::from_secs(60 * 60 * 24 * 365));
-    let meta = fs::metadata(root)
-        .map_err(|e| ScanError::InvalidTarget(format!("{}: {e}", root.display())))?;
-    if !meta.is_dir() {
-        return Err(ScanError::InvalidTarget(format!(
-            "{} is not a directory",
-            root.display()
-        )));
+    if !CONFINEMENT_VERIFIED {
+        return Err(ScanError::UnsupportedPlatform);
     }
-    let root = fs::canonicalize(root)
+    // The only ambient-authority operation: the user-supplied root is opened
+    // once, and everything after this goes through the resulting handle.
+    let root_dir = Dir::open_ambient_dir(root, ambient_authority())
+        .map_err(|e| ScanError::InvalidTarget(format!("{}: {e}", root.display())))?;
+    // The path is for display only; no file is opened through it.
+    let root_path = fs::canonicalize(root)
         .map_err(|e| ScanError::InvalidTarget(format!("{}: {e}", root.display())))?;
 
-    let discovery = discover_workflows(&root, limits, deadline);
+    let discovery = discover_workflows(&root_dir, limits, deadline);
     let mut findings = Vec::new();
     let mut incomplete = discovery.incomplete;
     for file in &discovery.files {
@@ -89,8 +100,8 @@ fn scan_with(
     }
 
     let target = Target {
-        path: root.to_string_lossy().into_owned(),
-        revision: revision(&root),
+        path: root_path.to_string_lossy().into_owned(),
+        revision: revision(&root_dir),
     };
     let ruleset = RulesetInfo {
         id: RULESET_ID.to_string(),

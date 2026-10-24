@@ -4,6 +4,7 @@
 //! content, and it never reports an incomplete inspection as clean.
 
 mod discover;
+mod fsaccess;
 mod limits;
 mod model;
 mod revision;
