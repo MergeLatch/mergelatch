@@ -695,3 +695,75 @@ fn a_command_fed_by_a_here_document_is_still_classified() {
     let report = head_then_script("bash <<EOF\nnpm test\nEOF");
     assert_eq!(rule(&report).len(), 1);
 }
+#[test]
+fn global_options_before_a_checkout_command_do_not_hide_it() {
+    // Each of these was scanned as clean before global options were normalized.
+    for checkout in [
+        "gh -R owner/repo pr checkout 12",
+        "gh --repo owner/repo pr checkout 12",
+        "gh --repo=owner/repo pr checkout 12",
+        "gh pr -R owner/repo checkout 12",
+        "gh pr checkout 12 -R owner/repo",
+        "git -C . fetch origin pull/12/head:pr",
+        "git -C sub fetch origin refs/pull/12/head",
+        "git --git-dir=.git fetch origin refs/pull/12/head",
+        "git --git-dir .git fetch origin refs/pull/12/head",
+        "git --work-tree=. --no-pager fetch origin pull/12/merge",
+        "git --no-pager fetch origin pull/12/head:pr",
+        "git -C . -c user.name=x fetch origin pull/12/head:pr",
+        "git -C . checkout ${{ github.head_ref }}",
+    ] {
+        let report = base_then_script(&format!("{checkout}\nnpm test"));
+        assert_eq!(rule(&report).len(), 1, "{checkout}: {:#?}", report);
+    }
+}
+
+#[test]
+fn checkout_and_execution_in_separate_steps_are_still_connected() {
+    let report = scan_text(&format!(
+        "on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@{SHA}\n      - run: gh -R owner/repo pr checkout 12\n      - run: npm test\n"
+    ));
+    let found = rule(&report);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].location, "jobs.a.steps[1].run");
+}
+
+#[test]
+fn ordinary_git_and_gh_with_global_options_stay_clean() {
+    for command in [
+        "git -C sub log --oneline -n 3",
+        "git --no-pager diff --stat",
+        "git --git-dir=.git status",
+        "git -C . fetch origin main",
+        "gh -R owner/repo pr view 12 --json title",
+        "gh --repo owner/repo pr comment 12 --body ok",
+        "gh -R owner/repo issue list",
+    ] {
+        let report = base_then_script(command);
+        assert_eq!(report.status, ScanStatus::Clean, "{command}: {:#?}", report);
+    }
+}
+
+#[test]
+fn unsupported_command_structures_that_could_bring_in_pr_code_are_analysis_limits() {
+    for command in [
+        // An option this reader does not know may take a value, hiding the subcommand.
+        "git --some-new-option value fetch origin pull/12/head:pr",
+        // A subcommand that may be an alias or an extension, naming a pull request ref.
+        "git pr-fetch origin pull/12/head",
+        "gh some-extension pr checkout 12",
+    ] {
+        let report = base_then_script(command);
+        assert_eq!(
+            report.status,
+            ScanStatus::Incomplete,
+            "{command}: {:#?}",
+            report
+        );
+        assert_eq!(
+            report.incomplete[0].kind,
+            IncompleteKind::AnalysisLimit,
+            "{command}"
+        );
+    }
+}

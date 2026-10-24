@@ -17,6 +17,9 @@ pub(crate) enum Cmd {
     Unknown(String),
     /// A command that fetches pull request code into the workspace.
     UntrustedCheckout(String),
+    /// A `git` or `gh` command that names pull request code but whose
+    /// structure this reader cannot follow, so it may bring that code in.
+    UncertainCheckout(String),
 }
 
 /// Tools that run project code: package managers with lifecycle scripts, test
@@ -443,8 +446,11 @@ fn classify(words: &[String]) -> Option<Cmd> {
         return None;
     }
 
-    if let Some(kind) = untrusted_checkout(rest) {
-        return Some(Cmd::UntrustedCheckout(kind));
+    if let Some(found) = untrusted_checkout(rest) {
+        return Some(match found {
+            Checkout::Certain(kind) => Cmd::UntrustedCheckout(kind),
+            Checkout::Uncertain(kind) => Cmd::UncertainCheckout(kind),
+        });
     }
     let shown = first.chars().take(60).collect::<String>();
     if first.starts_with('/') || first.starts_with('~') || first.starts_with('$') {
@@ -572,33 +578,14 @@ fn git_exec_argument(arg: &str) -> bool {
 }
 
 fn git(args: &[String]) -> Safety {
-    // Global options come before the subcommand. `-c name=value` and
-    // `--config-env` can set aliases, pagers, and other command-valued
-    // settings.
-    let mut i = 0;
-    let mut sub = None;
-    while let Some(arg) = args.get(i) {
-        let arg = arg.as_str();
-        if arg == "-c"
-            || arg.starts_with("--config-env")
-            || (arg.starts_with("-c") && !arg.starts_with("--"))
-        {
-            return Safety::Exec("git -c (sets configuration, including aliases)".into());
-        }
-        if arg.starts_with("--exec-path") {
-            return Safety::Exec("git --exec-path".into());
-        }
-        if arg == "-C" {
-            i += 2;
-        } else if arg.starts_with('-') {
-            i += 1;
-        } else {
-            sub = Some(arg);
-            break;
-        }
+    let call = split_git(args);
+    if let Some(reason) = call.exec {
+        return Safety::Exec(reason.into());
     }
-    let Some(sub) = sub else { return Safety::Safe };
-    let rest = &args[i + 1..];
+    let Some(sub) = call.sub else {
+        return Safety::Safe;
+    };
+    let rest = call.rest;
 
     if rest.iter().any(|a| git_exec_argument(a))
         || (sub == "grep" && rest.iter().any(|a| a == "-O" || a.starts_with("-O")))
@@ -909,35 +896,173 @@ fn awk(args: &[String]) -> Safety {
     Safety::Safe
 }
 
-/// Recognizes commands that bring pull request code into the workspace.
-fn untrusted_checkout(words: &[String]) -> Option<String> {
-    let first = words.first()?.as_str();
-    let second = words.get(1).map(String::as_str).unwrap_or("");
-    let third = words.get(2).map(String::as_str).unwrap_or("");
-    if first == "gh" && second == "pr" && third == "checkout" {
-        return Some("gh pr checkout".to_string());
-    }
-    if first == "git"
-        && matches!(
-            second,
-            "fetch"
-                | "pull"
-                | "checkout"
-                | "switch"
-                | "merge"
-                | "cherry-pick"
-                | "reset"
+enum Checkout {
+    Certain(String),
+    Uncertain(String),
+}
+
+/// Git subcommands that can bring a ref's contents into the working tree.
+const GIT_CHECKOUT_SUBCOMMANDS: &[&str] = &[
+    "fetch",
+    "pull",
+    "checkout",
+    "switch",
+    "merge",
+    "cherry-pick",
+    "reset",
+    "rebase",
+    "am",
+    "apply",
+];
+
+/// Git subcommands this reader understands, with or without special arguments.
+fn git_known(sub: &str) -> bool {
+    GIT_SAFE.contains(&sub)
+        || matches!(
+            sub,
+            "difftool"
+                | "mergetool"
+                | "filter-branch"
+                | "hook"
+                | "instaweb"
+                | "submodule"
+                | "bisect"
                 | "rebase"
-                | "am"
-                | "apply"
+                | "grep"
+                | "config"
         )
-        && words
-            .iter()
-            .any(|w| w.contains(UNTRUSTED_MARK) || w.contains("refs/pull/") || is_pull_ref(w))
-    {
-        return Some(format!("git {second}"));
+}
+
+/// Whether a word names pull request code.
+fn names_pull_request_code(word: &str) -> bool {
+    word.contains(UNTRUSTED_MARK) || word.contains("refs/pull/") || is_pull_ref(word)
+}
+
+/// Recognizes commands that bring pull request code into the workspace.
+///
+/// Global options are skipped first, so `git -C . fetch ...` and
+/// `gh -R owner/repo pr checkout 12` are seen as `git fetch` and
+/// `gh pr checkout`. A `git` or `gh` command that mentions pull request code
+/// but whose subcommand is not understood is reported as uncertain instead
+/// of being passed over.
+fn untrusted_checkout(words: &[String]) -> Option<Checkout> {
+    let first = words.first()?.as_str();
+    let names_pr_code = words.iter().any(|w| names_pull_request_code(w));
+    match first {
+        "git" => {
+            let call = split_git(&words[1..]);
+            let sub = call.sub?;
+            if GIT_CHECKOUT_SUBCOMMANDS.contains(&sub) && names_pr_code {
+                Some(Checkout::Certain(format!("git {sub}")))
+            } else if names_pr_code && !git_known(sub) {
+                Some(Checkout::Uncertain(format!(
+                    "git {}",
+                    sub.chars().take(40).collect::<String>()
+                )))
+            } else {
+                None
+            }
+        }
+        "gh" => {
+            let positional = gh_positional(&words[1..]);
+            let sub = *positional.first()?;
+            if sub == "pr"
+                && positional[1..]
+                    .iter()
+                    .any(|w| matches!(*w, "checkout" | "co"))
+            {
+                Some(Checkout::Certain("gh pr checkout".to_string()))
+            } else if !GH_SAFE.contains(&sub)
+                && !matches!(sub, "alias" | "extension" | "ext" | "config")
+                && words
+                    .iter()
+                    .any(|w| matches!(w.as_str(), "checkout" | "co") || names_pull_request_code(w))
+            {
+                Some(Checkout::Uncertain(format!(
+                    "gh {}",
+                    sub.chars().take(40).collect::<String>()
+                )))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
-    None
+}
+
+/// A `git` command line with its global options set aside.
+struct GitCall<'a> {
+    /// Set when a global option can make Git run a program (`-c`, ...).
+    exec: Option<&'static str>,
+    sub: Option<&'a str>,
+    rest: &'a [String],
+}
+
+/// Splits Git's global options from the subcommand and its arguments.
+///
+/// Options that take a separate value (`-C dir`, `--git-dir dir`, ...) have
+/// the value skipped. An option this reader does not know is assumed to take
+/// no value; if that is wrong, the value is read as the subcommand, which is
+/// not a known one, and callers treat that as unrecognized.
+fn split_git(args: &[String]) -> GitCall<'_> {
+    const CONFIG: &str = "git -c (sets configuration, including aliases)";
+    let mut exec = None;
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        let arg = arg.as_str();
+        if arg == "-c" {
+            exec.get_or_insert(CONFIG);
+            i += 2;
+        } else if arg.starts_with("--config-env") {
+            exec.get_or_insert(CONFIG);
+            i += if arg.contains('=') { 1 } else { 2 };
+        } else if arg.starts_with("-c") && !arg.starts_with("--") {
+            exec.get_or_insert(CONFIG);
+            i += 1;
+        } else if arg.starts_with("--exec-path") {
+            exec.get_or_insert("git --exec-path");
+            i += 1;
+        } else if arg == "-C"
+            || matches!(
+                arg,
+                "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--attr-source"
+            )
+        {
+            i += 2;
+        } else if arg.starts_with('-') {
+            i += 1;
+        } else {
+            return GitCall {
+                exec,
+                sub: Some(arg),
+                rest: &args[i + 1..],
+            };
+        }
+    }
+    GitCall {
+        exec,
+        sub: None,
+        rest: &[],
+    }
+}
+
+/// The words of a `gh` command line that are not flags or flag values for the
+/// global `-R`/`--repo` option.
+fn gh_positional(args: &[String]) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        let arg = arg.as_str();
+        if matches!(arg, "-R" | "--repo") {
+            i += 2;
+        } else if arg.starts_with('-') {
+            i += 1;
+        } else {
+            out.push(arg);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// `pull/123/head`, `pull/123/merge`, or `pull/EXPR/head`.
@@ -1381,5 +1506,83 @@ mod tests {
     fn a_command_that_reads_a_heredoc_is_still_classified() {
         assert_eq!(analyze("bash <<EOF\nnpm test\nEOF"), [exec("bash")]);
         assert_eq!(analyze("cat <<EOF | sh\nnpm test\nEOF"), [exec("sh")]);
+    }
+
+    // ---- Global options before checkout commands ------------------------------
+
+    #[test]
+    fn gh_global_options_do_not_hide_pr_checkout() {
+        for script in [
+            "gh -R owner/repo pr checkout 12",
+            "gh --repo owner/repo pr checkout 12",
+            "gh --repo=owner/repo pr checkout 12",
+            "gh pr -R owner/repo checkout 12",
+            "gh pr checkout 12 -R owner/repo",
+            "gh pr co 12",
+        ] {
+            assert_eq!(
+                analyze(script),
+                [Cmd::UntrustedCheckout("gh pr checkout".into())],
+                "{script}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_global_options_do_not_hide_pr_checkout() {
+        for (script, sub) in [
+            ("git -C . fetch origin pull/12/head:pr", "fetch"),
+            ("git -C sub fetch origin refs/pull/12/head", "fetch"),
+            ("git --git-dir=.git fetch origin refs/pull/12/head", "fetch"),
+            (
+                "git --git-dir .git --work-tree . fetch origin pull/12/merge",
+                "fetch",
+            ),
+            ("git --no-pager checkout UNTRUSTED_EXPR", "checkout"),
+            ("git -C . -c user.name=x fetch origin pull/12/head", "fetch"),
+            ("git --namespace=n pull origin pull/3/head", "pull"),
+        ] {
+            assert_eq!(
+                analyze(script),
+                [Cmd::UntrustedCheckout(format!("git {sub}"))],
+                "{script}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_commands_with_global_options_are_unchanged() {
+        for script in [
+            "git -C sub log --oneline -n 3",
+            "git --no-pager diff --stat",
+            "git --git-dir=.git status",
+            "git -C . fetch origin main",
+            "git -C . checkout main",
+            "gh -R owner/repo pr view 12 --json title",
+            "gh --repo owner/repo pr comment 12 --body ok",
+            "gh -R owner/repo issue list",
+            "gh pr list --repo owner/repo",
+        ] {
+            assert!(is_safe(script), "{script}: {:?}", analyze(script));
+        }
+    }
+
+    #[test]
+    fn unrecognized_structures_that_name_pr_code_are_uncertain() {
+        assert_eq!(
+            analyze("git --some-new-option value fetch origin pull/12/head:pr"),
+            [Cmd::UncertainCheckout("git value".into())]
+        );
+        assert_eq!(
+            analyze("git pr-fetch origin pull/12/head"),
+            [Cmd::UncertainCheckout("git pr-fetch".into())]
+        );
+        assert_eq!(
+            analyze("gh some-extension pr checkout 12"),
+            [Cmd::UncertainCheckout("gh some-extension".into())]
+        );
+        // Without any mention of pull request code, an unknown subcommand is
+        // only unknown, as before.
+        assert!(is_unknown("git mycommand --flag"));
     }
 }

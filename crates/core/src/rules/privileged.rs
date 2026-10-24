@@ -262,6 +262,15 @@ fn check_job(ctx: &mut Context<'_>, wf: &Workflow<'_>, job: &Job<'_>) {
                             how: format!("`{kind}` in a run step"),
                         });
                     }
+                    // Reported whether or not a checkout was seen: this command
+                    // may itself be the one that brings the code in.
+                    Cmd::UncertainCheckout(command) => ctx.limit(format!(
+                        "step {} of job `{}` runs `{}`, which names pull request code but whose \
+                         structure is not understood, so it may check that code out",
+                        step.index,
+                        job.id,
+                        sanitize_text(&command, 60)
+                    )),
                     Cmd::Exec(command) if origin.is_some() => execs.push(Exec {
                         step: step.index,
                         line,
