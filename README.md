@@ -2,7 +2,7 @@
 
 **Protect the contribution before it becomes part of the project.**
 
-> **Project status: early development.** MergeLatch has a working command-line scanner with four detection rules for GitHub Actions workflows (see below). It has not yet published a GitHub Action, desktop application, or installer, and it has no releases. Everything under "Planned" below describes intended features, not capabilities available today.
+> **Project status: early development.** MergeLatch has a working command-line scanner with four narrow detection rules for GitHub Actions workflows, and an advisory GitHub Action built on it (see below). The Action is not a merge gate. There is no published release, no desktop application, and no installer. Everything under "Planned" below describes intended features, not capabilities available today.
 
 MergeLatch is an open-source project for checking security-sensitive changes in Git repositories. It is designed for maintainers reviewing pull requests and developers working with code cloned onto their computers.
 
@@ -15,7 +15,7 @@ The aim is simple: help people understand what changed, what might be dangerous,
 | `mergelatch scan` CLI with human-readable and JSON output | Implemented |
 | Rules ML-GHA-001 to ML-GHA-004 for GitHub Actions workflows (see [Detection coverage](#detection-coverage)) | Implemented |
 | Local scanning with no network access, hosted service, or AI model | Implemented |
-| Advisory GitHub Action for pull requests (Linux runners, job summary; trial-tested by SHA in this repository, not a release, see [docs/ACTION.md](docs/ACTION.md)) | Implemented and merged, not released |
+| Advisory GitHub Action for pull requests (Linux runners, job summary; trial-tested by SHA in this repository, in a separate consumer repository, and on a fork pull request; no independent review; not a release, see [docs/ACTION.md](docs/ACTION.md)) | Implemented and merged, not released |
 | Sentinel desktop app, Agent Guard, dependency and malware checks, merge enforcement | Not implemented |
 
 ### Build and run
@@ -108,11 +108,11 @@ Each rule's coverage, example finding, remediation, false-positive risks, and un
 
 The repository contains a composite GitHub Action (`action.yml`) that runs the scanner on a checked-out pull request and writes a job summary and outputs. It is **advisory**: it is not a merge gate, a green check does not mean a pull request is safe, and it must not be added as a required check. It scans only the workflow files at the root of the scanned directory with rules ML-GHA-001 to ML-GHA-004. It does not scan source code for malware or the Git diff.
 
-- It supports GitHub-hosted Ubuntu x86-64 runners, `pull_request` triggers, `contents: read`, and no secrets. It enforces the runner and trigger restrictions at run time and refuses `pull_request_target`, `workflow_run`, self-hosted and non-Ubuntu runners, and environments that preload code (`LD_PRELOAD` and similar).
+- It is built and tested for GitHub-hosted Ubuntu x86-64 runners, the `pull_request` event, `contents: read`, and no secrets. At run time it refuses `pull_request_target` and `workflow_run`, self-hosted and non-Ubuntu runners, and environments that preload code (`LD_PRELOAD` and similar). The event restriction is a refusal of those two names, not an allowlist: other events are not refused, are untested, and get no revision check (see [Events](docs/ACTION.md#events)).
 - Steps do not run under bash, and the scanner is built in an environment assembled from fixed values, so `BASH_ENV`, `CARGO_HOME`, linker and compiler overrides, and rustup settings inherited from the workflow are ignored.
 - The scanner is built from the Action's own, separately checked-out source with a locked build. The pull request content is only passed to it as a directory to read.
 - Results: `clean`, `findings`, `incomplete`, and `error`. Findings and incomplete scans leave the step green but say so prominently in the summary. A scanner failure or an untrustworthy report fails the step.
-- The example in [docs/examples/pull-request-scan.yml](docs/examples/pull-request-scan.yml) pins the verified merge commit `afc7e65d6723029c22935f82c7fc9562d5831565`. That commit has been run as a SHA-pinned Action on GitHub in this repository, and its rendered summary shows the full SHA. It has not been tested in a separate consumer repository or from a fork pull request (the procedure is in [docs/EXTERNAL_TRIAL.md](docs/EXTERNAL_TRIAL.md)). It is not a published release, and a commit that can be referenced by SHA is not thereby an official release.
+- The example in [docs/examples/pull-request-scan.yml](docs/examples/pull-request-scan.yml) pins the verified merge commit `afc7e65d6723029c22935f82c7fc9562d5831565`. That commit has been run as a SHA-pinned Action on GitHub in this repository (its rendered summary shows the full SHA), in a separate consumer repository, and on a pull request from a first-time external fork contributor, whose run waited for maintainer approval. The fork's change was a README edit only. [docs/EXTERNAL_TRIAL.md](docs/EXTERNAL_TRIAL.md) records what those runs do and do not show. The commit has had no independent human review, it is not a published release, and a commit that can be referenced by SHA is not thereby an official release.
 
 Architecture, inputs and outputs, what revision is scanned, why a pull request can bypass the check, the tests, and the release process are in [docs/ACTION.md](docs/ACTION.md).
 
@@ -191,7 +191,7 @@ Sentinel will need to be running to monitor file changes. If your laptop is off,
 
 ## Planned: protecting pull requests on GitHub
 
-*The Action and its verified installation snippet will be published after implementation and security testing.*
+*An advisory-only Action exists (see [GitHub Action](#github-action-advisory-trial-tested-not-released)). The enforcement workflow below, with an official version-pinned snippet and a required status check, is planned and not available. An official installation snippet will be published only with a release.*
 
 1. Add the official version-pinned MergeLatch workflow to your repository.
 2. Run it against test pull requests, including safe and intentionally suspicious fixtures.
@@ -239,7 +239,7 @@ See [the implementation playbook](docs/BUILD_PLAN.md) for the steps from reposit
 
 ## How to help
 
-The project is in planning. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes and [the threat model](docs/THREAT_MODEL.md) for the risks the design is meant to address. Issue templates and repeatable tests will be added later. Please do not submit real malware samples or secrets to public issues.
+The project is in early development. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes and [the threat model](docs/THREAT_MODEL.md) for the risks the design is meant to address. Issue templates will be added later. Please do not submit real malware samples or secrets to public issues.
 
 ## Security
 
@@ -251,4 +251,4 @@ MergeLatch is licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
-**Current status:** early development; four rules implemented. Installation links, release badges, version numbers, performance claims, and coverage statistics will be added only after they are verified.
+**Current status:** early development; four rules and an advisory Action implemented, no release. Installation links, release badges, version numbers, performance claims, and coverage statistics will be added only after they are verified.

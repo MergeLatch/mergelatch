@@ -1,6 +1,6 @@
 # MergeLatch advisory GitHub Action
 
-**Status:** implemented and merged, **advisory only**, and **not released**. The Action implementation at commit `afc7e65d6723029c22935f82c7fc9562d5831565` has been run as a SHA-pinned Action on GitHub in this repository, and its rendered job summary showing the full pinned SHA has been inspected (see [Verification status](#verification-status)). Being referenceable by SHA does not make it an official release. It has not been tried in a separate consumer repository or from a fork. This Action is not a merge gate and must not be made a required check (see [Why this is not a merge gate](#why-this-is-not-a-merge-gate)).
+**Status:** implemented and merged, **advisory only**, and **not released**. The Action implementation at commit `afc7e65d6723029c22935f82c7fc9562d5831565` has been run as a SHA-pinned Action on GitHub in this repository, and its rendered job summary showing the full pinned SHA has been inspected (see [Verification status](#verification-status)). It has also been run from a separate consumer repository and from a pull request by a first-time external fork contributor (see [EXTERNAL_TRIAL.md](EXTERNAL_TRIAL.md)). Being referenceable by SHA does not make it an official release, and no independent human review has been recorded yet. This Action is not a merge gate and must not be made a required check (see [Why this is not a merge gate](#why-this-is-not-a-merge-gate)).
 
 ## What it does
 
@@ -38,10 +38,10 @@ How the separation is kept:
 - The summary lists the names (never the values) of inherited build settings that were present and ignored, and the `ignored-environment-count` output gives their number.
 - **Loader variables are refused.** `LD_PRELOAD`, `LD_LIBRARY_PATH`, other `LD_*` variables, and `GCONV_PATH` make the loader run code in every process, including the Action's own Python, before any of its code runs. They cannot be undone from inside the Action, so the Action stops with an error naming the variable instead of continuing.
 - The scanned directory is only ever an argument to the finished binary. It is validated first: it must be a relative path without `..`, must resolve (after symlinks) inside the workspace, and must exist. A workspace without a `.git` entry is an error, so a forgotten checkout cannot produce an empty "clean" result.
-- The scanner runs with an empty environment (no tokens, no `GITHUB_*` values), from a private state directory, with a time limit and an output size limit.
+- The scanner runs with the same minimal fixed environment as the build (`PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`; no tokens, no `GITHUB_*` values, nothing from the workflow), from a private state directory, with a time limit and an output size limit.
 - Inputs and GitHub context reach the scripts only through environment variables, never inside a shell command. Pull request titles, bodies, branch names, and file names are not used for anything executable.
 - Everything in the scanner's report is treated as untrusted. It is validated against the report schema (types, enums, counts, and consistency between the status and the lists), then truncated and Markdown/HTML-escaped before it enters the job summary. Control and bidirectional-format characters are shown as `\u{..}`. Nothing from the report is written to the workflow log.
-- The Action refuses to run on `pull_request_target` and `workflow_run`, which give workflows secrets or a write-capable token.
+- The Action refuses to run when the event is `pull_request_target` or `workflow_run`, which give workflows secrets or a write-capable token. This is a refusal list of exactly those two names, not a list of allowed events; see [Events](#events).
 - **Runner restrictions are enforced, not only documented.** The Action stops with an error unless the runner is Linux (`runner.os`), GitHub-hosted (`runner.environment`), x86-64 (`runner.arch`), and its image reports `ID=ubuntu` in `/etc/os-release`. Self-hosted runners and ARM runners are refused because the scanner's file confinement has only been verified on x86-64 Linux. These values come from the runner context and the image, so they are checked at run time; a self-hosted runner that misreports them is outside what the Action can detect.
 - If the Action is loaded from the scanned workspace itself (`uses: ./`), the summary and the `scanner-source` output say so: in that case the scanner code comes from the pull request and is **not** an independent release. The repository's own smoke test works this way.
 
@@ -61,12 +61,25 @@ There is deliberately no input that makes findings fail the job. That would impl
 | `status` | `clean`, `findings`, `incomplete`, or `error` |
 | `findings-count`, `incomplete-count`, `files-inspected` | Counts from the report |
 | `scanner-exit-code` | The scanner's own exit code, unchanged (`0` clean, `1` findings, `2` incomplete, `3` error; anything else means it failed) |
-| `revision-check` | `matches-merge`, `matches-head`, `mismatch`, `unavailable`, or `not-applicable` |
+| `revision-check` | `matches-merge`, `matches-head`, `mismatch`, `unavailable`, `not-applicable`, or `not-checked` (the run failed before there was a result to compare) |
 | `scanned-revision` | The commit the checkout recorded, if readable |
 | `scanner-version`, `ruleset` | What produced the report |
-| `scanner-source` | `action-checkout` or `workspace` |
+| `scanner-source` | `action-checkout`, `workspace` (the Action was loaded from the scanned workspace), or `unknown` (the preparation step did not finish) |
 | `action-pinned` | `true` only when the Action was referenced by a full 40-character commit SHA |
+| `action-revision` | The full commit SHA the runner loaded the Action from, or empty when the Action was not referenced by a full SHA |
 | `ignored-environment-count` | How many inherited build settings (for example `CARGO_HOME`, `BASH_ENV`) were present and ignored |
+
+## Events
+
+The Action is designed, documented, and trial-tested for the `pull_request` event. What the helper actually does with each event name was checked by running its `prepare` step on 17 names (and is pinned by `test_privileged_events_are_refused`):
+
+| Event | Behavior |
+| --- | --- |
+| `pull_request` | Runs. The only event with an expected revision, so the only one that can report `matches-merge`, `matches-head`, or `mismatch` |
+| `pull_request_target`, `workflow_run` | Refused with an error before anything is built or scanned |
+| Every other event (for example `push`, `schedule`, `workflow_dispatch`, `issue_comment`, `pull_request_review`, `merge_group`) | **Not refused.** The scan runs, `revision-check` is `not-applicable`, and the summary says there is no expected revision. These events are unsupported and untested |
+
+The refusal is a guard on this Action, not a security boundary. A workflow that runs under a privileged event can check out and execute pull request code with its own steps whether or not this Action refuses to run, and the Action cannot see how the rest of the job is built. The Action itself uses no secrets and starts its children with an environment built from fixed values, so running it under another event does not give the scanner a token. Do not run it on events other than `pull_request`. Whether to turn the refusal list into an allowlist is an open decision recorded in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions). GitHub documents that a reusable workflow sees the caller's event name; that was not tested here.
 
 ## What revision is scanned
 
@@ -74,10 +87,10 @@ Whatever the earlier checkout step put in the directory. With `actions/checkout`
 
 - `matches-merge` or `matches-head`: reported as that one revision. The summary never claims both were scanned.
 - `mismatch`: the checkout is neither (for example a stale or wrong ref). The job **fails** with status `error`.
-- `unavailable`: the scanned directory has no readable `.git` (for example a subdirectory). The scan runs and the summary says the revision could not be checked.
+- `unavailable`: the scanned directory has no readable `.git`. **When `scan-directory` is a subdirectory, this is always the case, because the revision is read from `.git` in the scanned directory itself.** The scan runs, the step stays green, and the summary says the revision could not be checked, so no protection against a wrong checkout applies. Scan the workspace root, or assert `revision-check` in a later step, if that matters to you.
 - `not-applicable`: the event has no expected revision (for example `push`).
 
-The revision comes from `.git` files in the checkout, which are what the checkout claims, not a verified identity.
+The revision comes from `.git` files in the checkout, which are what the checkout claims, not a verified identity. It identifies the commit that was checked out, not the content of the files: a step that changes files after the checkout is not detected, which is another reason to run this Action before any other step that touches the workspace.
 
 ## Meaning of the results and how they appear
 
@@ -98,7 +111,7 @@ The build downloads the pinned Rust toolchain and the locked crates, which takes
 
 ## Fork pull requests
 
-On `pull_request` from a fork the token is read-only and secrets are not available, which suits this Action. GitHub may require approval before workflows run for some first-time contributors. Because nothing is written back to the pull request, results appear only in the job summary and annotations of that run.
+On `pull_request` from a fork the token is read-only and secrets are not available, which suits this Action. GitHub may require approval before workflows run for some first-time contributors. In the trial, a first-time external contributor's run waited with `action_required` until a maintainer approved it, and the approved run showed `Contents: read` and no secret source. Approve a run only after reading what the pull request changes under `.github/`; a pull request can edit the workflow that calls this Action. Because nothing is written back to the pull request, results appear only in the job summary and annotations of that run.
 
 ## Why this is not a merge gate
 
@@ -119,7 +132,7 @@ Real enforcement needs a separately trusted workflow or service that the pull re
 | Static | `action.yml` and every workflow: read-only tokens, no secrets, no privileged triggers, SHA-pinned external Actions, `persist-credentials: false`, no expressions in `run:` text |
 | GitHub-hosted run | `.github/workflows/action-checks.yml` runs the composite Action with `uses: ./` on a hosted runner, including a first run with hostile `BASH_ENV`, `CARGO_HOME`, linker, wrapper, and rustup settings, a positive-control bash step, and a run with `LD_PRELOAD` that must fail. This executes the unreviewed implementation and is read-only, with no secrets and no enforcement role. It does not prove that consumers using a released, SHA-pinned Action are protected |
 
-The case of a separately checked-out Action directory (`scanner-source: action-checkout`) is covered by the mocked and simulated tests only. Verifying it on GitHub needs a real pinned reference, which does not exist yet.
+The case of a separately checked-out Action directory (`scanner-source: action-checkout`) is covered by the mocked and simulated tests, and was observed on GitHub for `afc7e65…` in this repository and in a separate consumer repository (see [Verification status](#verification-status)).
 
 ## Verification status
 
@@ -128,11 +141,25 @@ The case of a separately checked-out Action directory (`scanner-source: action-c
 | Source reviewed | `afc7e65d6723029c22935f82c7fc9562d5831565`, the merge commit of pull request #9 |
 | SHA-pinned trial tested | Yes: GitHub downloaded and ran exactly that commit (run 40096959695) |
 | Rendered full SHA verified | **Yes**, by reading the Action's own rendered job summaries of that run. Every summary shows ``MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565`` in full |
-| External consumer tested | **No.** No designated, authorized separate repository exists. See [EXTERNAL_TRIAL.md](EXTERNAL_TRIAL.md) |
-| Fork pull request tested | **No** |
-| Published release | None |
+| External consumer tested | **Yes**, in the separate repository `MergeLatch/mergelatch-consumer-trial`: clean passed, the unsafe-permissions fixture gave one finding, the malformed fixture gave incomplete, and the Action came from the separate pinned download (run 40099476256) |
+| Fork pull request tested | **Yes, in a limited way.** A first-time external account (association `NONE`) opened pull request #2 from a fork. The first attempt was `action_required` and ran no jobs. After a maintainer approved it, the run succeeded (run 40100818227) with the full pinned SHA, `scanner-source` = `action-checkout`, and `revision-check` = `matches-merge`. The fork's change was a README edit only; a fork that edits the workflow was not tried |
+| Independent human review | **Pending.** Nothing has been recorded by a qualified reviewer |
+| Published release | None. No tag and no GitHub release exist |
 
-The Action implementation is `action.yml`, `action/mergelatch_action.py`, `action/build.sh`, `Cargo.lock`, `rust-toolchain.toml`, and the Rust crates. Later merge commits that change only workflows, tests, or documentation do not change what a consumer gets by pinning `afc7e65…`, so they do not need to be trial-tested again. Re-verification is needed only if that implementation changes or a defect is found.
+Details, caveats, and what these runs do not show are in [EXTERNAL_TRIAL.md](EXTERNAL_TRIAL.md).
+
+### Which commit was tested
+
+The Action implementation is `action.yml`, `action/mergelatch_action.py`, `action/build.sh`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, and `crates/`. A consumer who pins a commit receives the whole repository at that commit, but only these paths are built or run.
+
+Only `afc7e65d6723029c22935f82c7fc9562d5831565` itself has been run as a pinned Action. A later commit has a different SHA and has **not** been run as an immutable Action unless a run for that exact SHA is recorded here. As of the review-readiness work (main at `4af8f9aa9340fee38abb7c9f3b554c53ad645d64`), every path above has the same git object ID as at `afc7e65…` (checked with `git rev-parse <commit>:<path>`), so the implementation is byte-identical and only workflows, tests, and documentation differ. That is a statement about identical files, not a new test. The check to repeat for any later commit is:
+
+```
+git diff --quiet afc7e65d6723029c22935f82c7fc9562d5831565 <commit> -- \
+  action.yml action/mergelatch_action.py action/build.sh Cargo.toml Cargo.lock rust-toolchain.toml crates
+```
+
+Re-verification of the Action as a pinned reference is needed if that diff is not empty or a defect is found in the implementation. For a first release, the plan in [RELEASE_PLAN.md](RELEASE_PLAN.md) runs the consumer trial against the exact release commit before it is tagged.
 
 ## Trial results
 
@@ -157,8 +184,8 @@ Measured on that run (one fresh cold runner): total run 34 s, trial job 30 s, no
 
 Not verified, and not measured:
 
-- **A separate consumer repository.** Not tested; no authorized disposable repository has been designated. The proposed procedure is in [EXTERNAL_TRIAL.md](EXTERNAL_TRIAL.md).
-- **A pull request from a fork,** including GitHub's approval behavior. Not tried.
+- **A contributor who edits the calling workflow,** in a fork or otherwise. The external fork pull request changed a README line only ([EXTERNAL_TRIAL.md](EXTERNAL_TRIAL.md)).
+- **Event restrictions on GitHub.** The refusal of `pull_request_target` and `workflow_run` is covered by unit tests only; no GitHub run used those events.
 - **GitHub being unable to download the Action.** Not simulated. The job would fail at setup before any step runs.
 - **A cold build failure on GitHub** (for example an unreachable Rust distribution server). Covered only by mocked tests, which report status `error` and fail the step.
 - Network dependencies, from the logs: GitHub (the Action download), the Rust distribution server (the pinned toolchain), and the crates registry (the locked crates).
@@ -187,17 +214,19 @@ This is a review of the Action as it stands, not a release. No tag, release page
 
 Open items before a first controlled public release candidate:
 
-1. Repeat the verification in a separate, designated, disposable consumer repository ([EXTERNAL_TRIAL.md](EXTERNAL_TRIAL.md)). Blocked on someone designating and authorizing that repository.
-2. Exercise a pull request from a fork and record GitHub's approval behavior (same procedure; also blocked on authorization).
-3. Independent review of the Action, helper, and workflows.
+1. Independent human review of the Action, helper, workflows, and build ([REVIEW_READINESS.md](REVIEW_READINESS.md)). Pending.
+2. Decisions on the open items in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions), notably whether the Action should accept only `pull_request`.
+3. A consumer-trial run pinned to the exact commit that would be tagged, if it differs from `afc7e65…` ([RELEASE_PLAN.md](RELEASE_PLAN.md)).
 
-The in-repository SHA-pinned verification, including the rendered full SHA, is complete for `afc7e65…`.
+Done for `afc7e65…`: the in-repository SHA-pinned verification including the rendered full SHA, the separate consumer repository run, and a first-time external fork pull request run (README-only change).
 
 ## Known limitations
 
 - Narrow coverage: four rules on workflow files only. See [RULES.md](RULES.md) for false positives and negatives.
+- **Very large reports fail the step.** The scanner caps neither the number of findings nor the size of its report. The helper rejects reports over 5 MiB, so a workflow of a few hundred kilobytes with thousands of findings (reproduced with 7,000 unpinned steps, about 9.5 MB) produces status `error` and a failed step instead of a list of findings. This is fail-closed and is pinned by a test, but it means such a pull request gets no finding list.
 - Escaping removes markup and control characters but cannot stop look-alike (confusable) characters in file names from misleading a reader.
-- The revision check trusts the checkout's `.git` files.
+- The revision check trusts the checkout's `.git` files, checks a commit and not file content, and does not apply to subdirectory scans or to events other than `pull_request`.
+- The command-line scanner ignores errors writing its report to standard output (for example a full disk) and still returns the scan's exit code, so a redirected report can be truncated while the exit code is correct. The Action detects this because a truncated report fails validation.
 - Filesystem and platform limits of the scanner (Linux only, residual races) apply. See the threat model.
 - The Python helper, the build, and the downloaded toolchain and crates are part of the trusted computing base.
 - The runner's own Rust installation (`~/.cargo/bin`, `~/.rustup`, and any `config.toml` in `~/.cargo`) and the system Python and bash are trusted. A previous step that runs untrusted code in the same job could modify them or the files the runner uses to carry settings between steps (`GITHUB_ENV`, `GITHUB_PATH`); run this Action before any step that executes pull request code, and do not add such steps to the same job.
@@ -208,7 +237,7 @@ The in-repository SHA-pinned verification, including the rendered full SHA, is c
 ## Release and SHA-pinning process (not yet done)
 
 1. Independent review of this change, including the helper and the workflows.
-2. Merge. Run the smoke test and a controlled advisory trial in a repository that is not otherwise protected by it.
+2. Merge. Run the smoke test and a controlled advisory trial in a repository that is not otherwise protected by it. (Done for `afc7e65…`: in-repository, separate consumer repository, and a fork pull request.)
 3. Cut a release from a reviewed commit and record its **full 40-character SHA**. Verify the SHA against the repository before publishing it.
 4. Consumers pin that SHA and nothing else. The example currently names the verified commit `afc7e65…`, not a release. Updates are made by reviewing a newer commit and changing the whole SHA, never by following a branch or tag.
 5. Optionally extract `action.yml`, `action/`, and the scanner source (or checksummed release binaries) into a separate `mergelatch-action` repository after the above. The extraction must keep `Cargo.lock` and `rust-toolchain.toml` with the source it builds, and must repeat the review and the SHA pinning for the new location. That repository does not exist yet.
