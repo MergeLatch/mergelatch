@@ -123,6 +123,36 @@ jobs:
         with:
           scan-directory: stale-checkout
 
+      # A pull_request scan whose revision cannot be verified must be an error
+      # even though the real checkout above has a valid merge HEAD. These are
+      # inert text files in sub-directories (GitHub never runs them as workflows)
+      # and are only read as data. Each directory has a `.git` FILE that points
+      # nowhere, as a submodule or worktree would, so its own revision cannot be
+      # read and it must not borrow the parent's.
+      - name: Create inert nested checkouts whose revision cannot be read
+        run: |
+          set -euo pipefail
+          mkdir unverified-nested unverified-nested-findings
+          cp -R fixtures/gha-permissions/safe-read-only/.github unverified-nested/.github
+          cp -R fixtures/gha-permissions/workflow-write-all/.github unverified-nested-findings/.github
+          for dir in unverified-nested unverified-nested-findings; do
+            printf 'gitdir: ../nowhere\n' > "${dir}/.git"
+          done
+
+      - name: Scan a clean nested checkout with no readable revision (error expected, the step fails on purpose)
+        id: unverified
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
+        with:
+          scan-directory: unverified-nested
+
+      - name: Scan a nested checkout with a finding and no readable revision (error expected, not findings)
+        id: unverified_findings
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@95bad26bc731caa913861e95f75bf2c4de3dc6b4
+        with:
+          scan-directory: unverified-nested-findings
+
       - name: Verify the trust boundary and provenance
         env:
           WORKSPACE: ${{ github.workspace }}
@@ -168,6 +198,20 @@ jobs:
           STALE_OUTCOME: ${{ steps.stale.outcome }}
           STALE_STATUS: ${{ steps.stale.outputs.status }}
           STALE_REVISION_CHECK: ${{ steps.stale.outputs.revision-check }}
+          FINDINGS_REVISION_CHECK: ${{ steps.findings.outputs.revision-check }}
+          FINDINGS_REVISION: ${{ steps.findings.outputs.scanned-revision }}
+          INCOMPLETE_REVISION_CHECK: ${{ steps.incomplete.outputs.revision-check }}
+          UNVERIFIED_OUTCOME: ${{ steps.unverified.outcome }}
+          UNVERIFIED_STATUS: ${{ steps.unverified.outputs.status }}
+          UNVERIFIED_REVISION_CHECK: ${{ steps.unverified.outputs.revision-check }}
+          UNVERIFIED_REVISION: ${{ steps.unverified.outputs.scanned-revision }}
+          UNVERIFIED_SOURCE: ${{ steps.unverified.outputs.scanner-source }}
+          UNVERIFIED_ACTION_REVISION: ${{ steps.unverified.outputs.action-revision }}
+          UNVERIFIED_FINDINGS_OUTCOME: ${{ steps.unverified_findings.outcome }}
+          UNVERIFIED_FINDINGS_STATUS: ${{ steps.unverified_findings.outputs.status }}
+          UNVERIFIED_FINDINGS_COUNT: ${{ steps.unverified_findings.outputs.findings-count }}
+          UNVERIFIED_FINDINGS_REVISION_CHECK: ${{ steps.unverified_findings.outputs.revision-check }}
+          UNVERIFIED_FINDINGS_REVISION: ${{ steps.unverified_findings.outputs.scanned-revision }}
         run: |
           set -euo pipefail
           fail() { echo "::error title=Trial::$1"; exit 1; }
@@ -230,6 +274,27 @@ jobs:
           [ "${STALE_OUTCOME}" = failure ] || fail "a stale revision did not fail the step"
           [ "${STALE_STATUS}" = error ] || fail "a stale revision was not reported as an error"
           [ "${STALE_REVISION_CHECK}" = mismatch ] || fail "a stale revision was not reported as a mismatch"
+
+          # 3b. Sub-directory scans are verified through the workspace checkout's own HEAD.
+          [ "${FINDINGS_REVISION_CHECK}" = matches-merge ] || fail "a fixture sub-directory scan was not verified as matches-merge"
+          [ "${FINDINGS_REVISION}" = "${EXPECTED_MERGE}" ] || fail "a fixture sub-directory scan reported a different revision"
+          [ "${INCOMPLETE_REVISION_CHECK}" = matches-merge ] || fail "the incomplete fixture scan was not verified as matches-merge"
+
+          # 3c. EXPECTED ACTION FAILURES. The two steps above are meant to fail: this job passes only
+          # because every assertion below confirms that they failed in exactly this way. An unreadable
+          # nested revision is an error and never clean, findings, or incomplete, and the parent
+          # checkout's valid merge HEAD must not stand in for it.
+          [ "${UNVERIFIED_OUTCOME}" = failure ] || fail "an unverifiable revision did not fail the Action step"
+          [ "${UNVERIFIED_STATUS}" = error ] || fail "an unverifiable revision was not reported as an error"
+          [ "${UNVERIFIED_REVISION_CHECK}" = unavailable ] || fail "the unverifiable revision was not reported as unavailable"
+          [ -z "${UNVERIFIED_REVISION}" ] || fail "an unverifiable scan reported a scanned revision"
+          [ "${UNVERIFIED_SOURCE}" = action-checkout ] || fail "the unverifiable scan lost the scanner source"
+          [ "${UNVERIFIED_ACTION_REVISION}" = "${ACTION_SHA}" ] || fail "the unverifiable scan lost the Action revision"
+          [ "${UNVERIFIED_FINDINGS_OUTCOME}" = failure ] || fail "an unverifiable revision with a finding did not fail the step"
+          [ "${UNVERIFIED_FINDINGS_STATUS}" = error ] || fail "a finding hid an unverifiable revision (status was not error)"
+          [ "${UNVERIFIED_FINDINGS_REVISION_CHECK}" = unavailable ] || fail "the finding scan's revision was not unavailable"
+          [ -z "${UNVERIFIED_FINDINGS_REVISION}" ] || fail "the finding scan reported a scanned revision"
+          [ "${UNVERIFIED_FINDINGS_COUNT}" = 1 ] || fail "the finding was not still shown in the counts"
 
           # 4. Hostile inputs were only read as data and inherited settings were ignored.
           [ "${HOSTILE_STATUS}" = clean ] || fail "hostile fixtures were not scanned clean"
