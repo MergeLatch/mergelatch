@@ -1,0 +1,209 @@
+name: Action checks
+
+# Tests for the advisory GitHub Action. Like the Rust workflow, this runs
+# contributed code (the code under review), so it is deliberately
+# unprivileged: pull_request only, a read-only token, no secrets, and no
+# deployment, approval, or merge permissions. It is not a security gate and is
+# not a required check.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-checks-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint-and-unit:
+    name: lint and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned upstream releases, verified by SHA-256 before they are unpacked.
+      - name: Install actionlint and shellcheck
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/lint-bin"
+          mkdir -p "${bin}"
+          cd "${RUNNER_TEMP}"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum --check --status
+          tar -xzf actionlint.tar.gz -C "${bin}" actionlint
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output shellcheck.tar.xz \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  shellcheck.tar.xz" | sha256sum --check --status
+          tar -xJf shellcheck.tar.xz -C "${bin}" --strip-components=1 shellcheck-v0.11.0/shellcheck
+          echo "${bin}" >> "${GITHUB_PATH}"
+
+      - name: Lint workflows and the example consumer workflow
+        run: |
+          actionlint
+          cp docs/examples/pull-request-scan.yml "${RUNNER_TEMP}/example.yml"
+          actionlint "${RUNNER_TEMP}/example.yml"
+
+      - name: Lint shell scripts
+        run: shellcheck action/build.sh
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - name: Build the scanner for the integration tests
+        run: cargo build --locked -p mergelatch-cli
+
+      - name: Scan this repository with the scanner
+        run: ./target/debug/mergelatch scan .
+
+      - name: Action unit tests
+        env:
+          MERGELATCH_TEST_BIN: ${{ github.workspace }}/target/debug/mergelatch
+        run: python3 -m unittest discover -b -v -s action/tests
+
+  smoke:
+    # Runs the composite Action from this pull request's own checkout
+    # (`uses: ./`). That is the unreviewed implementation, so it proves the Action
+    # works on a GitHub-hosted runner. It does not show that consumers using a
+    # released, SHA-pinned Action are protected.
+    name: smoke test (Action from this checkout)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # First, so that the scanner is built here for the first time with hostile
+      # settings in the environment. If any of them were honored, a marker file
+      # would appear in the fixture directory or the build would fail.
+      - name: Scan with hostile build settings inherited from the workflow
+        id: hostile_env
+        uses: ./
+        env:
+          BASH_ENV: ${{ github.workspace }}/fixtures/action-hostile/bash_env.sh
+          ENV: ${{ github.workspace }}/fixtures/action-hostile/bash_env.sh
+          CARGO_HOME: ${{ github.workspace }}/fixtures/action-hostile/cargo-home
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: ${{ github.workspace }}/fixtures/action-hostile/evil-linker.sh
+          RUSTC_WRAPPER: ${{ github.workspace }}/fixtures/action-hostile/evil-wrapper.sh
+          RUSTUP_DIST_SERVER: http://127.0.0.1:9
+          RUSTFLAGS: -C link-arg=-fno-such-flag
+        with:
+          scan-directory: fixtures/action-hostile
+
+      # Positive control: a normal bash step does honor BASH_ENV, so the check
+      # above is meaningful.
+      - name: Control, BASH_ENV in an ordinary bash step
+        env:
+          BASH_ENV: ${{ github.workspace }}/fixtures/action-hostile/control_bash_env.sh
+        run: echo "ordinary bash step"
+
+      - name: Scan with a loader variable in the environment
+        id: loader
+        continue-on-error: true
+        uses: ./
+        env:
+          LD_PRELOAD: /nonexistent/mergelatch-test-preload.so
+        with:
+          scan-directory: fixtures/action-hostile
+
+      - name: Scan this repository
+        id: clean
+        uses: ./
+
+      - name: Scan a fixture with a finding
+        id: findings
+        uses: ./
+        with:
+          scan-directory: fixtures/gha-permissions/workflow-write-all
+
+      - name: Scan an incomplete fixture
+        id: incomplete
+        uses: ./
+        with:
+          scan-directory: fixtures/gha-permissions/malformed
+
+      - name: Scan a fixture full of hostile build files
+        id: hostile
+        uses: ./
+        with:
+          scan-directory: fixtures/action-hostile
+
+      - name: Scan a directory that does not exist
+        id: invalid
+        continue-on-error: true
+        uses: ./
+        with:
+          scan-directory: fixtures/does-not-exist
+
+      - name: Check the outputs
+        env:
+          CLEAN_STATUS: ${{ steps.clean.outputs.status }}
+          CLEAN_REVISION_CHECK: ${{ steps.clean.outputs.revision-check }}
+          CLEAN_REVISION: ${{ steps.clean.outputs.scanned-revision }}
+          CLEAN_SOURCE: ${{ steps.clean.outputs.scanner-source }}
+          CLEAN_PINNED: ${{ steps.clean.outputs.action-pinned }}
+          EXPECTED_MERGE: ${{ github.sha }}
+          FINDINGS_STATUS: ${{ steps.findings.outputs.status }}
+          FINDINGS_COUNT: ${{ steps.findings.outputs.findings-count }}
+          FINDINGS_EXIT: ${{ steps.findings.outputs.scanner-exit-code }}
+          INCOMPLETE_STATUS: ${{ steps.incomplete.outputs.status }}
+          INCOMPLETE_EXIT: ${{ steps.incomplete.outputs.scanner-exit-code }}
+          HOSTILE_STATUS: ${{ steps.hostile.outputs.status }}
+          HOSTILE_ENV_STATUS: ${{ steps.hostile_env.outputs.status }}
+          HOSTILE_ENV_IGNORED: ${{ steps.hostile_env.outputs.ignored-environment-count }}
+          LOADER_OUTCOME: ${{ steps.loader.outcome }}
+          LOADER_STATUS: ${{ steps.loader.outputs.status }}
+          INVALID_OUTCOME: ${{ steps.invalid.outcome }}
+          INVALID_STATUS: ${{ steps.invalid.outputs.status }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=Smoke test::$1"; exit 1; }
+          [ "${CLEAN_STATUS}" = clean ] || fail "repository scan was not clean"
+          [ "${CLEAN_REVISION_CHECK}" = matches-merge ] || fail "revision check was not matches-merge"
+          [ "${CLEAN_REVISION}" = "${EXPECTED_MERGE}" ] || fail "scanned revision differs from the merge commit"
+          # Loaded from the workspace, so it must say it is not an independent release.
+          [ "${CLEAN_SOURCE}" = workspace ] || fail "scanner source was not reported as the workspace"
+          [ "${CLEAN_PINNED}" = false ] || fail "local Action was reported as pinned"
+          [ "${FINDINGS_STATUS}" = findings ] || fail "write-all fixture did not produce findings"
+          [ "${FINDINGS_COUNT}" = 1 ] || fail "unexpected finding count"
+          [ "${FINDINGS_EXIT}" = 1 ] || fail "scanner exit code was not preserved"
+          [ "${INCOMPLETE_STATUS}" = incomplete ] || fail "malformed fixture was not incomplete"
+          [ "${INCOMPLETE_EXIT}" = 2 ] || fail "incomplete exit code was not preserved"
+          [ "${HOSTILE_STATUS}" = clean ] || fail "hostile fixture scan was not clean"
+          [ "${HOSTILE_ENV_STATUS}" = clean ] || fail "scan with hostile environment settings was not clean"
+          # Proves the hostile variables reached the Action and were ignored.
+          [ "${HOSTILE_ENV_IGNORED}" -ge 5 ] || fail "hostile environment settings were not seen by the Action"
+          [ "${LOADER_OUTCOME}" = failure ] || fail "a loader variable did not fail the step"
+          [ "${LOADER_STATUS}" = error ] || fail "a loader variable was not reported as an error"
+          [ "${INVALID_OUTCOME}" = failure ] || fail "invalid scan target did not fail the step"
+          [ "${INVALID_STATUS}" = error ] || fail "invalid scan target was not reported as an error"
+
+      - name: Check that nothing in the scanned directory or the hostile settings ran
+        run: |
+          set -euo pipefail
+          if compgen -G 'fixtures/action-hostile/HOSTILE_*' > /dev/null; then
+            echo "::error title=Smoke test::a hostile build file or setting ran"
+            exit 1
+          fi
+          # The positive control must have fired, or the checks above prove nothing.
+          if [ ! -e fixtures/action-hostile/CONTROL_BASH_ENV_RAN ]; then
+            echo "::error title=Smoke test::the BASH_ENV control did not run"
+            exit 1
+          fi

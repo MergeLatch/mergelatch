@@ -1,0 +1,8 @@
+{
+  "name": "hostile-fixture",
+  "version": "0.0.0",
+  "scripts": {
+    "postinstall": "touch HOSTILE_NPM_RAN",
+    "test": "touch HOSTILE_NPM_TEST_RAN"
+  }
+}

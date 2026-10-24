@@ -1,0 +1,9 @@
+name: Hostile build files fixture
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  noop:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "fixture only; never run"
