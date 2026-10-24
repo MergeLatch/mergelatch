@@ -52,9 +52,12 @@ DIGITS = re.compile(r"\A[0-9]{1,20}\Z")
 KIND = re.compile(r"\A[a-z_]{1,40}\Z")
 RULE_ID = re.compile(r"\A[A-Z0-9-]{1,32}\Z")
 
-# Events on which this Action refuses to run. Both give the workflow secrets
-# or a write-capable token, which an untrusted checkout must never share.
-PRIVILEGED_EVENTS = ("pull_request_target", "workflow_run")
+# The only event this Action runs on. Matching is exact: names are not
+# normalized, so other events (including the privileged pull_request_target
+# and workflow_run, which give a workflow secrets or a write-capable token
+# that an untrusted checkout must never share) are rejected, as is any
+# empty, missing, differently capitalized or padded name.
+SUPPORTED_EVENTS = ("pull_request",)
 
 BUILD_TIMEOUT_SECONDS = 1500
 OS_RELEASE_PATH = "/etc/os-release"
@@ -289,10 +292,10 @@ def prepare(env: dict) -> int:
         workspace = os.path.realpath(workspace_raw)
 
         event = env.get("MLA_EVENT_NAME", "")
-        if event in PRIVILEGED_EVENTS:
+        if event not in SUPPORTED_EVENTS:
             raise ActionError(
-                "this Action supports the pull_request event, not %s; "
-                "privileged events must not run it" % event
+                "this Action supports only the pull_request event; "
+                "it was started by a different or unrecognized event"
             )
 
         action_root = os.path.realpath(env.get("MLA_ACTION_PATH", ""))

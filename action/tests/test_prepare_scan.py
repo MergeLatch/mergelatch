@@ -105,14 +105,13 @@ class Prepare(unittest.TestCase):
         _, out, _ = self.prepare()
         self.assertEqual(out["ok"], "true")
 
-    def test_privileged_events_are_refused(self):
-        for event in ("pull_request_target", "workflow_run"):
+    def test_only_the_pull_request_event_is_accepted(self):
+        for event in ("pull_request_target", "workflow_run", "push", "workflow_dispatch", "schedule"):
             _, out, state = self.prepare(MLA_EVENT_NAME=event)
             self.assertEqual(out["ok"], "false", event)
-            self.assertIn("pull_request event", state["error"])
-        for event in ("pull_request", "push", "workflow_dispatch", "schedule"):
-            _, out, _ = self.prepare(MLA_EVENT_NAME=event)
-            self.assertEqual(out["ok"], "true", event)
+            self.assertIn("only the pull_request event", state["error"])
+        _, out, _ = self.prepare(MLA_EVENT_NAME="pull_request")
+        self.assertEqual(out["ok"], "true")
 
     def test_max_findings_must_be_a_small_number(self):
         for value in ("0", "101", "abc", "-1", "1e3", "2.5", " 5", "٣"):
