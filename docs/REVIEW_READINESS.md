@@ -153,6 +153,15 @@ These are accepted design limits, documented in [ACTION.md](ACTION.md) and the [
 | Separate consumer repository, pinned `afc7e65…` | [40099476256](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40099476256) | success |
 | First-time external fork pull request, after maintainer approval (attempt 2; attempt 1 was `action_required`) | [40100818227](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40100818227) | success |
 
+Evidence for the **corrected implementation** `2a1a514…` (strict event allowlist, D-1). The rows above tested `afc7e65…` and are kept as history:
+
+| What | Run | Result |
+| --- | --- | --- |
+| In-repository trial pinned at `2a1a514…`, rendered summaries inspected | [40106718920](https://github.com/MergeLatch/mergelatch/actions/runs/40106718920) | success |
+| Separate consumer repository pinned at `2a1a514…` (consumer PR #3, not merged) | [40106918299](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40106918299) | success |
+| `workflow_dispatch` rejected-event test (consumer PR #4) | not run | **pending maintainer merge and manual dispatch** |
+| Fork pull request against `2a1a514…` | not run | not performed |
+
 The checks for the review-readiness pull request itself appear on that pull request and are reported with it; they run the implementation as `uses: ./` and are therefore not tests of a pinned Action.
 
 ### Local checks (2026-10-24, this machine, Linux x86-64, Rust 1.99.1)

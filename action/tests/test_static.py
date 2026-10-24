@@ -17,8 +17,11 @@ WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
 EXAMPLE = REPO_ROOT / "docs" / "examples" / "pull-request-scan.yml"
 # MergeLatch commits trial-tested as a SHA-pinned Action. The trial workflow names the candidate
 # under test; the example and docs name only a commit whose trial has already passed.
-TRIAL_WORKFLOW_SHA = "afc7e65d6723029c22935f82c7fc9562d5831565"
+TRIAL_WORKFLOW_SHA = "2a1a514b94754b146a690cf98ef59bc649d423ff"
 TRIAL_TESTED_SHA = "afc7e65d6723029c22935f82c7fc9562d5831565"
+# Every MergeLatch commit that has actually run as a SHA-pinned Action on GitHub with the results
+# recorded in the docs. The docs may name these; the example names only TRIAL_TESTED_SHA.
+RUN_AS_PINNED_ACTION_SHAS = {TRIAL_TESTED_SHA, "2a1a514b94754b146a690cf98ef59bc649d423ff"}
 ACTION_YML = (REPO_ROOT / "action.yml").read_text()
 
 ATTACKER_FIELDS = re.compile(
@@ -193,7 +196,8 @@ class OnlyTheTrialTestedShaIsNamed(unittest.TestCase):
             if not path.exists():
                 continue
             for sha in re.findall(r"MergeLatch/mergelatch@([0-9a-f]{40})", path.read_text()):
-                self.assertEqual(sha, TRIAL_TESTED_SHA, "%s names a MergeLatch commit that was never trial-tested" % path.name)
+                allowed = {TRIAL_TESTED_SHA} if path == EXAMPLE else RUN_AS_PINNED_ACTION_SHAS
+                self.assertIn(sha, allowed, "%s names a MergeLatch commit that was never trial-tested" % path.name)
 
 
 if __name__ == "__main__":

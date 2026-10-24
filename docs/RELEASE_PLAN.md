@@ -45,7 +45,7 @@ The exact candidate is chosen when the blockers close. It is not named here beca
 
 ### The implementation has changed (D-1)
 
-Decision D-1 has been implemented: `action/mergelatch_action.py` now accepts only the `pull_request` event. Any commit that contains it is a new implementation. The procedure below therefore applies to the candidate; `afc7e65…` remains the evidence for the earlier implementation only. The corrected implementation has not completed these checks.
+Decision D-1 has been implemented: `action/mergelatch_action.py` now accepts only the `pull_request` event. Any commit that contains it is a new implementation. The procedure below therefore applies to the candidate; `afc7e65…` remains the evidence for the earlier implementation only. Status of those checks for `2a1a514b94754b146a690cf98ef59bc649d423ff` (merge of #12): steps 1 and 2 are done (in-repository run 40106718920 and consumer run 40106918299, both on GitHub and inspected); the `workflow_dispatch` rejected-event run in step 3 is **pending** a maintainer merging and dispatching consumer pull request #4; step 4 (fork) was not performed; step 6 is partly done in [ACTION.md](ACTION.md#verification-status). The corrected implementation has therefore not completed all of these checks.
 
 ### If an implementation path changes
 

@@ -146,6 +146,22 @@ The case of a separately checked-out Action directory (`scanner-source: action-c
 
 Details, caveats, and what these runs do not show are in [EXTERNAL_TRIAL.md](EXTERNAL_TRIAL.md).
 
+### Corrected implementation: `2a1a514b94754b146a690cf98ef59bc649d423ff`
+
+The table above is the evidence for `afc7e65…`, whose helper accepted every event except `pull_request_target` and `workflow_run`. Decision D-1 (pull request #12, merge commit `2a1a514…`) changed the helper to accept only `pull_request`. That is a different implementation, so it is verified separately and the old results are kept, not reused:
+
+| Item | Status |
+| --- | --- |
+| Unit and simulated tests | Pass (local, 143 Python tests; see [REVIEW_READINESS.md](REVIEW_READINESS.md)) |
+| Pinned in this repository, `pull_request` | **Yes**, run [40106718920](https://github.com/MergeLatch/mergelatch/actions/runs/40106718920) (pull request #13). The log shows `Download action repository 'MergeLatch/mergelatch@2a1a514…'`; the scanner compiled from `_actions/MergeLatch/mergelatch/2a1a514…/crates/core`; the workflow's SHA-256 checks of `action.yml`, the helper, `build.sh` and `Cargo.lock` (computed with `git show 2a1a514…:<path>`) passed, and only the helper's hash differs from `afc7e65…`. Clean, findings, incomplete, missing-directory, no-checkout, `LD_PRELOAD`, head, merge and stale-revision scenarios behaved as before. The rendered summaries, read in a browser, show ``MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff`` in full in every scenario |
+| Separate consumer repository, `pull_request` | **Yes**, run [40106918299](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40106918299) (consumer pull request #3, not merged): pinned download of `2a1a514…`, assertions passed (clean, one finding, incomplete, `action-checkout`, full-SHA `action-revision`, `matches-merge`) |
+| Rejected event on GitHub (`workflow_dispatch`) | **Pending.** The workflow is proposed in consumer pull request #4 and cannot run until a maintainer merges it and dispatches it. Not run |
+| Fork pull request with the new implementation | **Not performed.** The earlier fork run tested `afc7e65…` |
+| Independent human review | **Pending** |
+| Published release | None |
+
+The example workflow, `TRIAL_TESTED_SHA`, and the "tested" wording elsewhere still name `afc7e65…` until the rejected-event test has run; they move to `2a1a514…` only then.
+
 ### Which commit was tested
 
 The Action implementation is `action.yml`, `action/mergelatch_action.py`, `action/build.sh`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, and `crates/`. A consumer who pins a commit receives the whole repository at that commit, but only these paths are built or run.
