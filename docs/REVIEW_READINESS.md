@@ -160,7 +160,7 @@ Evidence for the **corrected implementation** `2a1a514…` (strict event allowli
 | In-repository trial pinned at `2a1a514…`, rendered summaries inspected | [40106718920](https://github.com/MergeLatch/mergelatch/actions/runs/40106718920) | success |
 | Separate consumer repository pinned at `2a1a514…` (consumer PR #3, not merged) | [40106918299](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40106918299) | success |
 | `workflow_dispatch` rejected-event test: the Action step failed as intended and the assertion job passed (consumer PR #4 workflow, dispatched by the maintainer) | [40108606160](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40108606160) | success |
-| Fork pull request against `2a1a514…` | not run | not performed |
+| First-time external fork PR #6 against `2a1a514b94754b146a690cf98ef59bc649d423ff`, README-only edit, approved by maintainer after `action_required`; closed unmerged | [40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817) (attempt 2) | success: full pinned SHA, `action-checkout`, `matches-merge`, clean repository, one fixture finding, one incomplete fixture |
 
 The checks for the review-readiness pull request itself appear on that pull request and are reported with it; they run the implementation as `uses: ./` and are therefore not tests of a pinned Action.
 
@@ -224,7 +224,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 - **Threat:** a maintainer who believes the Action accepts only `pull_request` runs it under an event such as `issue_comment` (which runs the default branch's workflow and can have secrets and a write-capable token) in a job that also checks out pull request code. The Action does not make that job unsafe: it uses no secrets, builds and runs the scanner in an environment assembled from fixed values, and never executes the scanned content. The danger lies in the rest of that job, which the refusal would not have prevented even for the two refused events.
 - **Attacker capability required:** none beyond what the workflow author already grants; a contributor cannot choose the event.
 - **Severity:** Informational as a documentation inconsistency. No demonstrated vulnerability, so none is claimed.
-- **Disposition:** the documentation was first corrected to state the actual behavior. The maintainer then decided D-1 and the guard was replaced by an exact allowlist, `SUPPORTED_EVENTS = ("pull_request",)`, with no normalization; every other name fails preparation with a fixed message, skips build and scan, and ends in status `error`. This is a hardening change, not the fix for a defect. It changes `action/mergelatch_action.py`, so `afc7e65…` no longer represents the current implementation and the targeted re-verification in [RELEASE_PLAN.md](RELEASE_PLAN.md) is required. Status: implemented and merged as `2a1a514…`; verified as a pinned Action in this repository, in the separate consumer repository, and under a real `workflow_dispatch` event; **not independently reviewed, not released**. No fork run was made against it.
+- **Disposition:** the documentation was first corrected to state the actual behavior. The maintainer then decided D-1 and the guard was replaced by an exact allowlist, `SUPPORTED_EVENTS = ("pull_request",)`, with no normalization; every other name fails preparation with a fixed message, skips build and scan, and ends in status `error`. This is a hardening change, not the fix for a defect. It changes `action/mergelatch_action.py`, so `afc7e65…` no longer represents the current implementation and the targeted re-verification in [RELEASE_PLAN.md](RELEASE_PLAN.md) is required. Status: implemented and merged as `2a1a514…`; verified as a pinned Action in this repository, in the separate consumer repository, and under a real `workflow_dispatch` event; **not independently reviewed, not released**. A first-time README-only fork PR subsequently ran against it ([40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817)); a workflow-editing fork was not tested.
 
 ### F-02. Revision check scope
 
@@ -272,7 +272,7 @@ Any of D-1 to D-3 changes a trusted implementation file. If one is made, the pre
 A release candidate tag must not be created until all of these are closed:
 
 1. **Independent human review is recorded** (see [Sign-off](#sign-off)). Currently pending.
-2. **D-1 has independent review.** It is decided, implemented and verified as a pinned Action (see the evidence table), but has had no independent review. Whether a fork run against the corrected SHA is also required is a maintainer decision.
+2. **D-1 has independent review.** It is decided, implemented and verified as a pinned Action (see the evidence table), but has had no independent review. A README-only external fork run against the corrected SHA has now passed; it does not cover a contributor modifying the calling workflow.
 3. **A consumer-trial run exists for the exact commit to be tagged,** unless the tag is placed on `afc7e65…` itself (see [RELEASE_PLAN.md](RELEASE_PLAN.md) for why that is not recommended).
 4. **F-05, F-07, F-08 are confirmed or dismissed** by the reviewer.
 5. **The reviewer's checklist items below are answered** and any resulting defect is fixed through the private vulnerability process if it is exploitable.
@@ -333,7 +333,7 @@ Mark each item with the commit SHA reviewed and the result.
 
 **Conditionally ready for independent review; blocked for a release candidate tag.**
 
-- Ready to hand to a reviewer: the scope, trust boundaries, controls, limitations, evidence, and findings are written down; local checks pass; the Action has run from three contexts on GitHub; no confirmed defect was found.
+- Ready to hand to a reviewer: the scope, trust boundaries, controls, limitations, evidence, and findings are written down; local checks pass; the Action has run in-repository, in a separate consumer, under an intentionally rejected event, and from a README-only external fork; no confirmed defect was found.
 - Blocked for `v0.1.0-rc.1`: no independent human has reviewed the code, three hypotheses are unconfirmed, and the implemented hardening decision (D-1) changed the trusted helper, which has been verified as a pinned Action but not independently reviewed.
 - Whatever happens, the Action stays advisory: it must not be a required check, and no enforcement is claimed.
 
