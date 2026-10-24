@@ -6,12 +6,11 @@ MergeLatch is in the design and planning stage. It does not yet publish a workin
 
 Do not report vulnerabilities in public issues, pull requests, or discussions.
 
-At the time of writing, GitHub private vulnerability reporting is **not yet enabled** for this repository, and no dedicated security email address exists. The maintainers intend to enable private vulnerability reporting and will update this file when it is available. Until then:
+Use GitHub's private vulnerability reporting form:
 
-1. Open a public issue that says only that you wish to report a security problem. Do not include technical details, proof-of-concept code, or credentials.
-2. A maintainer will reply with a private way to continue the conversation.
+https://github.com/MergeLatch/mergelatch/security/advisories/new
 
-Once private reporting is enabled, use the **Report a vulnerability** option under the repository's **Security** tab.
+You can also reach it from the **Security** tab of the repository by choosing **Report a vulnerability**. Reports submitted this way are visible only to you and the repository maintainers.
 
 ## What to include in a report
 
