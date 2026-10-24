@@ -218,6 +218,34 @@ class RealScanner(unittest.TestCase):
             code, out, _ = self.revision_scan("sub", head)
             self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "unavailable"), head[:30])
 
+    def test_a_nested_checkout_never_inherits_the_parent_revision(self):
+        # The parent workspace has a verified merge HEAD. A scanned directory that is itself a
+        # checkout, whose own revision cannot be read, must not borrow it.
+        def nested(path, make):
+            d = self.ws.workspace / path
+            d.mkdir(parents=True)
+            make(d)
+
+        cases = {
+            "git file": ("n1", lambda d: (d / ".git").write_text("gitdir: ../elsewhere\n")),
+            "missing HEAD": ("n2", lambda d: (d / ".git").mkdir()),
+            "malformed HEAD": ("n3", lambda d: ((d / ".git").mkdir(), (d / ".git" / "HEAD").write_text("garbage\n"))),
+            "symlinked .git": ("n4", lambda d: (d / ".git").symlink_to(self.ws.root)),
+            "symbolic HEAD": ("n5", lambda d: ((d / ".git").mkdir(), (d / ".git" / "HEAD").write_text("ref: refs/heads/x\n"))),
+        }
+        for label, (path, make) in cases.items():
+            nested(path, make)
+            code, out, _ = self.revision_scan(path, SHA_MERGE + "\n")
+            self.assertEqual((code, out["status"], out["revision-check"], out["scanned-revision"]),
+                             (1, "error", "unavailable", ""), label)
+
+    def test_a_directory_below_a_nested_checkout_does_not_inherit_the_parent_revision_either(self):
+        inner = self.ws.workspace / "vendor" / "lib" / "src"
+        inner.mkdir(parents=True)
+        (self.ws.workspace / "vendor" / ".git").write_text("gitdir: ../elsewhere\n")
+        code, out, _ = self.revision_scan("vendor/lib/src", SHA_MERGE + "\n")
+        self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "unavailable"))
+
     def test_a_pull_request_without_expected_commits_is_an_error(self):
         code, out, summary = self.revision_scan(".", SHA_MERGE + "\n", MLA_SHA="", MLA_PR_HEAD_SHA="")
         self.assertEqual((code, out["status"], out["revision-check"]), (1, "error", "not-applicable"))

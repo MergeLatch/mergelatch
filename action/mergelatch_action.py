@@ -605,6 +605,19 @@ def read_workspace_head(workspace: str) -> str | None:
     return text if HEX_OBJECT_ID.match(text) else None
 
 
+def inside_nested_checkout(workspace: str, scan_dir: str) -> bool:
+    """True when the scanned directory, or a directory between it and the
+    workspace root, has a `.git` entry of its own (a nested repository, a
+    submodule or worktree `.git` file, or a link). Such a directory's revision
+    is its own: when it cannot be read, the parent's must not stand in for it."""
+    current = scan_dir
+    while current != workspace and current.startswith(workspace.rstrip(os.sep) + os.sep):
+        if os.path.lexists(os.path.join(current, ".git")):
+            return True
+        current = os.path.dirname(current)
+    return False
+
+
 def evaluate(raw: bytes | None, exit_code: int | None, context: dict,
              prepare_error: str | None = None, build_outcome: str | None = None,
              workspace_revision: str | None = None) -> dict:
@@ -864,7 +877,10 @@ def report_command(env: dict) -> int:
 
     build_outcome = env.get("MLA_BUILD_OUTCOME") or None
     workspace = state.get("workspace")
-    workspace_revision = read_workspace_head(workspace) if workspace and not prepare_error else None
+    scan_dir = state.get("scan_dir")
+    workspace_revision = None
+    if workspace and scan_dir and not prepare_error and not inside_nested_checkout(workspace, scan_dir):
+        workspace_revision = read_workspace_head(workspace)
     result = evaluate(raw, exit_code, context, prepare_error, build_outcome, workspace_revision)
     report = result["report"]
     source = state.get("scanner_source", "unknown")
