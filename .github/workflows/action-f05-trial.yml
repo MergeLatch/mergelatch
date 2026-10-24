@@ -15,8 +15,13 @@ name: Action F-05 trial (same-job interference)
 # advisory and is not a security gate or a required check. It runs on
 # pull_request with a read-only token and no secrets.
 on:
+  # Runs only for a pull request that changes this file. The jobs below deliberately
+  # tamper with their own runner (a wrapped cargo, a detached background process), so
+  # unrelated pull requests must not exercise them.
   pull_request:
     branches: [main]
+    paths:
+      - .github/workflows/action-f05-trial.yml
 
 permissions:
   contents: read
