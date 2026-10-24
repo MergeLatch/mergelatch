@@ -7,7 +7,7 @@ name: Action trial (SHA-pinned)
 # This is advisory and is not a security gate or a required check. It runs on
 # pull_request with a read-only token and no secrets. It scans only inert
 # fixtures and this repository's own workflow files as data. The Action under
-# trial is the reviewed commit named below (the merge commit of pull request #9),
+# trial is the reviewed commit named below (the merge commit of pull request #12, which adds the strict pull_request event allowlist),
 # not the code in this pull request.
 on:
   pull_request:
@@ -22,10 +22,10 @@ concurrency:
 
 env:
   # The reviewed commit that GitHub downloads and runs as the Action.
-  ACTION_SHA: afc7e65d6723029c22935f82c7fc9562d5831565
+  ACTION_SHA: 2a1a514b94754b146a690cf98ef59bc649d423ff
   # SHA-256 of files at that commit, to show the downloaded directory is the reviewed one.
   ACTION_YML_SHA256: e2cf315032bd24871e6c70524d7bb245b1e73dc5ad8610693834c327c5f2e17e
-  HELPER_SHA256: 2a50b3488f0e3885e969b1e350ef92e9e967f3062daeb042fc6027cdb0726d71
+  HELPER_SHA256: b04cbbea00226723eb32623d4864169720fd57ed5a5a4e100bdac129016e92ec
   BUILD_SH_SHA256: 05b93ff6ae321c7e93f1fe8c694bd752e7844482906bb1a51cb5deeec331d138
   LOCKFILE_SHA256: 0080ec065c655c4478d7135f84666b9aa0de1e6db6c418dfc39e01a461dde053
 
@@ -46,7 +46,7 @@ jobs:
       # settings present. Nothing in this workspace is ever built or run.
       - name: Scan fixtures full of hostile build files, with hostile settings inherited
         id: hostile
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
         env:
           BASH_ENV: ${{ github.workspace }}/fixtures/action-hostile/bash_env.sh
           CARGO_HOME: ${{ github.workspace }}/fixtures/action-hostile/cargo-home
@@ -64,31 +64,31 @@ jobs:
 
       - name: Scan this repository (clean expected)
         id: clean
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
 
       - name: Scan a fixture with a finding
         id: findings
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
         with:
           scan-directory: fixtures/gha-permissions/workflow-write-all
 
       - name: Scan a malformed fixture (incomplete expected)
         id: incomplete
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
         with:
           scan-directory: fixtures/gha-permissions/malformed
 
       - name: Scan a directory that does not exist (error expected)
         id: missing
         continue-on-error: true
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
         with:
           scan-directory: fixtures/does-not-exist
 
       - name: Scan with a loader variable in the environment (early failure expected)
         id: loader
         continue-on-error: true
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
         env:
           LD_PRELOAD: /nonexistent/mergelatch-test-preload.so
         with:
@@ -112,14 +112,14 @@ jobs:
 
       - name: Scan the head checkout (head revision expected)
         id: head
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
         with:
           scan-directory: head-checkout
 
       - name: Scan the stale checkout (revision mismatch expected)
         id: stale
         continue-on-error: true
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
         with:
           scan-directory: stale-checkout
 
@@ -267,7 +267,7 @@ jobs:
       - name: Run the Action without a checkout (failure expected)
         id: nocheckout
         continue-on-error: true
-        uses: MergeLatch/mergelatch@afc7e65d6723029c22935f82c7fc9562d5831565
+        uses: MergeLatch/mergelatch@2a1a514b94754b146a690cf98ef59bc649d423ff
 
       - name: Check the result
         env:

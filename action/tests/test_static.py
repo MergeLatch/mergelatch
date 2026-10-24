@@ -17,7 +17,7 @@ WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
 EXAMPLE = REPO_ROOT / "docs" / "examples" / "pull-request-scan.yml"
 # MergeLatch commits trial-tested as a SHA-pinned Action. The trial workflow names the candidate
 # under test; the example and docs name only a commit whose trial has already passed.
-TRIAL_WORKFLOW_SHA = "afc7e65d6723029c22935f82c7fc9562d5831565"
+TRIAL_WORKFLOW_SHA = "2a1a514b94754b146a690cf98ef59bc649d423ff"
 TRIAL_TESTED_SHA = "afc7e65d6723029c22935f82c7fc9562d5831565"
 ACTION_YML = (REPO_ROOT / "action.yml").read_text()
 
