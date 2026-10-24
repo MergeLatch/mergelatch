@@ -250,6 +250,17 @@ This is a distinct implementation from the historical D-1 SHA above. PR #18 merg
 | New external fork test of D-2 | Not performed. The README-only fork trial [40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817) tested the earlier D-1 SHA |
 | Independent human review and published release | Both **pending**; trials are maintainer-led verification, not approval to release |
 
+### F-08 process-group timeout fix: `c5296cef5fd3ffc36f1b8f0649e6491050606275`
+
+The F-08 helper merged in [PR #21](https://github.com/MergeLatch/mergelatch/pull/21). It is a distinct trusted implementation from the previous D-1/D-2 pinned revisions.
+
+| Verification | Evidence |
+| --- | --- |
+| Source SHA-pinned trial | [Run 40125146676](https://github.com/MergeLatch/mergelatch/actions/runs/40125146676), [PR #22](https://github.com/MergeLatch/mergelatch/pull/22) merged. GitHub downloaded and compiled `c5296cef5fd3ffc36f1b8f0649e6491050606275` separately, verified helper SHA-256 `6d6620ad6f69056684bb0c8265caf03829a6074e78f5a07efed39ba8935d1970`; a fake Cargo build timed out after two seconds, child and grandchild stopped, and the script was reaped. Normal exit codes, early-failure cleanup and existing D-2 assertions passed |
+| Separate consumer trial | [Run 40126418768](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40126418768), consumer [PR #8](https://github.com/MergeLatch/mergelatch-consumer-trial/pull/8), merged at `f377c582ebe1d9a790ffec66c99919fbc3aec852`. Exact same SHA downloaded; F-08 fake-process timeout, early-error cleanup and D-2 checks passed |
+| Earlier failed consumer attempt | [Run 40126234617](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40126234617) **failed** due to corrupted shell `$` PID text in the test harness; [fix commit `dab002e`](https://github.com/MergeLatch/mergelatch-consumer-trial/commit/dab002e835ab13d9b5255473f8d65979df887ac8) restored it. The final run above passed. Not a production-helper failure |
+| Limits | The rendered F-08 job summary was not separately checked visually; no new F-08 fork test; no independent qualified human security sign-off; not released |
+
 ## Known limitations
 
 - Narrow coverage: four rules on workflow files only. See [RULES.md](RULES.md) for false positives and negatives.
@@ -259,7 +270,7 @@ This is a distinct implementation from the historical D-1 SHA above. PR #18 merg
 - The command-line scanner ignores errors writing its report to standard output (for example a full disk) and still returns the scan's exit code, so a redirected report can be truncated while the exit code is correct. The Action detects this because a truncated report fails validation.
 - Filesystem and platform limits of the scanner (Linux only, residual races) apply. See the threat model.
 - The Python helper, the build, and the downloaded toolchain and crates are part of the trusted computing base.
-- **Build timeout.** The build is limited to 1,500 seconds. It runs in its own process group, and on timeout the whole group is killed and the step fails with status `error`. Earlier versions killed only the build script and left `cargo`, `rustc` and their children running (finding F-08). A build process that deliberately starts a new session escapes the group kill, and the kill is immediate, not graceful. The corrected behavior has not yet run as a pinned Action.
+- **Build timeout.** The build is limited to 1,500 seconds. It runs in its own process group, and on timeout the whole group is killed and the step fails with status `error`. Earlier versions killed only the build script and left `cargo`, `rustc` and their children running (finding F-08). A build process that deliberately starts a new session escapes the group kill, and the kill is immediate, not graceful. The corrected F-08 helper has passed both a source and separate consumer SHA-pinned trial, but has not received independent security sign-off or a release.
 - The runner's own Rust installation (`~/.cargo/bin`, `~/.rustup`, and any `config.toml` in `~/.cargo`) and the system Python and bash are trusted. A previous step that runs untrusted code in the same job could modify them or the files the runner uses to carry settings between steps (`GITHUB_ENV`, `GITHUB_PATH`); run this Action before any step that executes pull request code, and do not add such steps to the same job.
 - `LD_*` and `GCONV_PATH` are detected, not neutralized: by the time the Action can see them, the loader has already acted on them. The Action fails closed instead of continuing.
 - Settings are removed by building the child environment from fixed values. Settings that change how the already-running Python behaves, other than `PYTHON*` (ignored by `-I`) and the loader variables above, are not known and are not checked.
