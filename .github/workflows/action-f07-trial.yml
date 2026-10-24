@@ -49,6 +49,7 @@ jobs:
       - name: Probe the control and isolated interpreters
         run: |
           set -uo pipefail
+          set +e  # the control with a bogus PYTHONHOME is expected to fail
           lab="${RUNNER_TEMP}/f07-python"
           mkdir -p "${lab}/pypath" "${lab}/cwd" "${lab}/markers-plain" "${lab}/markers-isolated"
           cat > "${lab}/probe.py" <<'PY'
