@@ -1,9 +1,11 @@
-use std::ffi::OsString;
-use std::fs::{self, File};
-use std::io::{ErrorKind, Read};
-use std::path::{Path, PathBuf};
+use std::ffi::{OsStr, OsString};
+use std::io::ErrorKind;
+use std::path::Path;
 use std::time::Instant;
 
+use cap_std::fs::Dir;
+
+use crate::fsaccess::{classify, describe, read_bounded, read_options};
 use crate::{Incomplete, IncompleteKind, ScanLimits, sanitize_text};
 
 const WORKFLOWS_DIR: &str = ".github/workflows";
@@ -32,23 +34,62 @@ impl Discovery {
     }
 }
 
+/// Points in discovery where tests can change the filesystem, to prove that
+/// a change at exactly that moment cannot redirect a read outside the root.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code, reason = "only tests observe the steps")]
+pub(crate) enum Step<'a> {
+    BeforeOpenGithub,
+    BeforeOpenWorkflows,
+    AfterListing,
+    BeforeOpenFile(&'a OsStr),
+}
+
+pub(crate) trait Hooks {
+    fn at(&self, step: Step<'_>);
+}
+
+struct NoHooks;
+
+impl Hooks for NoHooks {
+    fn at(&self, _step: Step<'_>) {}
+}
+
 /// Finds and reads `.github/workflows/*.yml` and `*.yaml` under `root`.
 ///
-/// `root` must already be canonical. Every path that is read is canonicalized
-/// and must stay inside `root`; anything that cannot be read, is too large, or
-/// lies outside the root is recorded as incomplete instead of being skipped
-/// silently. Files are opened and read, never run.
-pub(crate) fn discover_workflows(root: &Path, limits: &ScanLimits, deadline: Instant) -> Discovery {
+/// Every path is resolved relative to the `root` handle, so nothing can be
+/// opened outside it even if the tree changes during the scan. Absolute
+/// symlinks are refused, and relative links may not climb above the root. Anything that
+/// cannot be read, is too large, is not a regular file, or would leave the
+/// root is recorded as incomplete instead of being skipped silently. Files are
+/// opened and read, never run.
+pub(crate) fn discover_workflows(root: &Dir, limits: &ScanLimits, deadline: Instant) -> Discovery {
+    discover_with(root, limits, deadline, &NoHooks)
+}
+
+pub(crate) fn discover_with(
+    root: &Dir,
+    limits: &ScanLimits,
+    deadline: Instant,
+    hooks: &dyn Hooks,
+) -> Discovery {
     let mut found = Discovery::default();
 
-    let Some(dir) = workflows_dir(root, &mut found) else {
+    hooks.at(Step::BeforeOpenGithub);
+    // `.github` is opened only to learn whether it exists and is usable; the
+    // handle is not reused, because every later path is resolved from `root`.
+    if open_subdir(root, ".github", &mut found).is_none() {
+        return found;
+    }
+    hooks.at(Step::BeforeOpenWorkflows);
+    let Some(workflows) = open_subdir(root, WORKFLOWS_DIR, &mut found) else {
         return found;
     };
 
-    let names = match list_dir(&dir, limits, &mut found) {
-        Some(names) => names,
-        None => return found,
+    let Some(names) = list_dir(&workflows, limits, &mut found) else {
+        return found;
     };
+    hooks.at(Step::AfterListing);
 
     let mut total_bytes: u64 = 0;
     for name in names {
@@ -67,86 +108,45 @@ pub(crate) fn discover_workflows(root: &Path, limits: &ScanLimits, deadline: Ins
             "{WORKFLOWS_DIR}/{}",
             sanitize_text(&name.to_string_lossy(), 200)
         );
-        if !read_one(
-            root,
-            &dir.join(&name),
-            &rel,
-            limits,
-            &mut total_bytes,
-            &mut found,
-        ) {
+        hooks.at(Step::BeforeOpenFile(&name));
+        if !read_one(root, &name, &rel, limits, &mut total_bytes, &mut found) {
             break;
         }
     }
     found
 }
 
-/// Resolves `.github/workflows`, returning `None` when it does not exist or
-/// cannot be inspected safely (the latter is recorded as incomplete).
-fn workflows_dir(root: &Path, found: &mut Discovery) -> Option<PathBuf> {
-    let github = root.join(".github");
-    match fs::symlink_metadata(&github) {
-        Err(e) if e.kind() == ErrorKind::NotFound => return None,
-        Err(e) => {
-            found.gap(Some(".github"), IncompleteKind::Unreadable, e.to_string());
-            return None;
-        }
-        Ok(_) => {}
-    }
-    let github = resolve_within(root, &github, ".github", found)?;
-    if !github.is_dir() {
-        return None;
-    }
-
-    let workflows = github.join("workflows");
-    match fs::symlink_metadata(&workflows) {
-        Err(e) if e.kind() == ErrorKind::NotFound => return None,
-        Err(e) => {
-            found.gap(
-                Some(WORKFLOWS_DIR),
-                IncompleteKind::Unreadable,
-                e.to_string(),
-            );
-            return None;
-        }
-        Ok(_) => {}
-    }
-    let workflows = resolve_within(root, &workflows, WORKFLOWS_DIR, found)?;
-    workflows.is_dir().then_some(workflows)
-}
-
-/// Canonicalizes `path` and requires the result to be inside `root`.
-fn resolve_within(root: &Path, path: &Path, rel: &str, found: &mut Discovery) -> Option<PathBuf> {
-    match fs::canonicalize(path) {
-        Ok(real) if real.starts_with(root) => Some(real),
-        Ok(_) => {
-            found.gap(
-                Some(rel),
-                IncompleteKind::OutsideRoot,
-                "path resolves outside the scan root and was not followed",
-            );
+/// Opens a directory by its path relative to the root handle. Returns `None` when it does
+/// not exist (nothing to inspect) or cannot be opened safely (recorded as
+/// incomplete).
+fn open_subdir(root: &Dir, rel: &str, found: &mut Discovery) -> Option<Dir> {
+    match root.open_dir(rel) {
+        Ok(dir) => Some(dir),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            // Missing is fine. A link whose target is missing is not.
+            if root.symlink_metadata(rel).is_ok() {
+                found.gap(
+                    Some(rel),
+                    IncompleteKind::Unreadable,
+                    "symbolic link target does not exist",
+                );
+            }
             None
         }
+        // A plain file where a directory is expected: GitHub ignores it too.
+        Err(e) if e.kind() == ErrorKind::NotADirectory => None,
         Err(e) => {
-            found.gap(
-                Some(rel),
-                IncompleteKind::Unreadable,
-                format!("cannot resolve path: {e}"),
-            );
+            found.gap(Some(rel), classify(&e), describe(&e));
             None
         }
     }
 }
 
-fn list_dir(dir: &Path, limits: &ScanLimits, found: &mut Discovery) -> Option<Vec<OsString>> {
-    let entries = match fs::read_dir(dir) {
+fn list_dir(dir: &Dir, limits: &ScanLimits, found: &mut Discovery) -> Option<Vec<OsString>> {
+    let entries = match dir.entries() {
         Ok(entries) => entries,
         Err(e) => {
-            found.gap(
-                Some(WORKFLOWS_DIR),
-                IncompleteKind::Unreadable,
-                e.to_string(),
-            );
+            found.gap(Some(WORKFLOWS_DIR), classify(&e), describe(&e));
             return None;
         }
     };
@@ -181,30 +181,38 @@ fn has_workflow_extension(name: &OsString) -> bool {
 }
 
 /// Reads one candidate file. Returns `false` when the scan should stop.
+///
+/// The file is opened once through the root handle, and its type and size
+/// are taken from that open handle, not from an earlier lookup by name.
 fn read_one(
-    root: &Path,
-    path: &Path,
+    root: &Dir,
+    name: &OsString,
     rel: &str,
     limits: &ScanLimits,
     total_bytes: &mut u64,
     found: &mut Discovery,
 ) -> bool {
-    let link = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
+    // Resolved from the root handle on every call, never from the path of an
+    // earlier lookup. A link anywhere on the path that leads outside the root
+    // is refused by the operating system call itself.
+    let path = Path::new(WORKFLOWS_DIR).join(name);
+    let file = match root.open_with(&path, &read_options()) {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            let detail = if root.symlink_metadata(&path).is_ok() {
+                "symbolic link target does not exist".to_string()
+            } else {
+                "file disappeared during the scan".to_string()
+            };
+            found.gap(Some(rel), IncompleteKind::Unreadable, detail);
+            return true;
+        }
         Err(e) => {
-            found.gap(Some(rel), IncompleteKind::Unreadable, e.to_string());
+            found.gap(Some(rel), classify(&e), describe(&e));
             return true;
         }
     };
-    let real = if link.file_type().is_symlink() {
-        match resolve_within(root, path, rel, found) {
-            Some(real) => real,
-            None => return true,
-        }
-    } else {
-        path.to_path_buf()
-    };
-    let meta = match fs::metadata(&real) {
+    let meta = match file.metadata() {
         Ok(meta) => meta,
         Err(e) => {
             found.gap(Some(rel), IncompleteKind::Unreadable, e.to_string());
@@ -218,7 +226,7 @@ fn read_one(
         found.gap(
             Some(rel),
             IncompleteKind::NotRegularFile,
-            "not a regular file; it was not opened",
+            "not a regular file; it was not read",
         );
         return true;
     }
@@ -248,21 +256,21 @@ fn read_one(
 
     // Read at most one byte past the limit so a file that grew after the
     // size check is still caught.
-    let mut bytes = Vec::new();
-    let read =
-        File::open(&real).and_then(|f| f.take(limits.max_file_bytes + 1).read_to_end(&mut bytes));
-    if let Err(e) = read {
-        found.gap(Some(rel), IncompleteKind::Unreadable, e.to_string());
-        return true;
-    }
-    if bytes.len() as u64 > limits.max_file_bytes {
-        found.gap(
-            Some(rel),
-            IncompleteKind::FileTooLarge,
-            format!("file exceeds the {} byte limit", limits.max_file_bytes),
-        );
-        return true;
-    }
+    let bytes = match read_bounded(file, limits.max_file_bytes) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            found.gap(
+                Some(rel),
+                IncompleteKind::FileTooLarge,
+                format!("file exceeds the {} byte limit", limits.max_file_bytes),
+            );
+            return true;
+        }
+        Err(e) => {
+            found.gap(Some(rel), IncompleteKind::Unreadable, e.to_string());
+            return true;
+        }
+    };
     *total_bytes += bytes.len() as u64;
 
     match String::from_utf8(bytes) {
@@ -282,7 +290,10 @@ fn read_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::time::Duration;
+
+    use cap_std::ambient_authority;
 
     fn far_deadline() -> Instant {
         Instant::now() + Duration::from_secs(60)
@@ -299,7 +310,7 @@ mod tests {
     }
 
     fn discover(dir: &tempfile::TempDir) -> Discovery {
-        let root = fs::canonicalize(dir.path()).unwrap();
+        let root = Dir::open_ambient_dir(dir.path(), ambient_authority()).unwrap();
         discover_workflows(&root, &ScanLimits::default(), far_deadline())
     }
 

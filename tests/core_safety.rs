@@ -275,18 +275,31 @@ mod unix {
     }
 
     #[test]
-    fn symlink_to_a_file_inside_root_is_read() {
+    fn relative_symlink_to_a_file_inside_root_is_read() {
         let dir = repo();
         fs::write(dir.path().join("shared.yml"), WRITE_ALL).unwrap();
-        symlink(dir.path().join("shared.yml"), workflow(&dir, "ci.yml")).unwrap();
+        symlink("../../shared.yml", workflow(&dir, "ci.yml")).unwrap();
         let report = scan(dir.path());
         assert_eq!(report.status, ScanStatus::Findings);
     }
 
     #[test]
+    fn absolute_symlink_is_not_followed_even_when_it_points_inside_root() {
+        // Behavior change from the path-based scanner: confinement cannot
+        // follow an absolute link, so it is reported instead of being read.
+        let dir = repo();
+        fs::write(dir.path().join("shared.yml"), WRITE_ALL).unwrap();
+        symlink(dir.path().join("shared.yml"), workflow(&dir, "ci.yml")).unwrap();
+        let report = scan(dir.path());
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        assert_eq!(kinds(&report), [IncompleteKind::OutsideRoot]);
+        assert!(report.findings.is_empty());
+    }
+
+    #[test]
     fn dangling_symlink_is_incomplete() {
         let dir = repo();
-        symlink(dir.path().join("missing.yml"), workflow(&dir, "ci.yml")).unwrap();
+        symlink("../../missing.yml", workflow(&dir, "ci.yml")).unwrap();
         let report = scan(dir.path());
         assert_eq!(report.status, ScanStatus::Incomplete);
         assert_eq!(kinds(&report), [IncompleteKind::Unreadable]);
