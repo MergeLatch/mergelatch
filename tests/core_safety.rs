@@ -297,6 +297,17 @@ mod unix {
     }
 
     #[test]
+    fn relative_directory_symlink_inside_root_is_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("shared-workflows")).unwrap();
+        fs::write(dir.path().join("shared-workflows/ci.yml"), WRITE_ALL).unwrap();
+        fs::create_dir(dir.path().join(".github")).unwrap();
+        symlink("../shared-workflows", dir.path().join(".github/workflows")).unwrap();
+        let report = scan(dir.path());
+        assert_eq!(report.status, ScanStatus::Findings);
+    }
+
+    #[test]
     fn dangling_symlink_is_incomplete() {
         let dir = repo();
         symlink("../../missing.yml", workflow(&dir, "ci.yml")).unwrap();
