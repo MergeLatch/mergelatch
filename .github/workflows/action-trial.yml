@@ -200,6 +200,19 @@ jobs:
           fi
           [ -e "${WORKSPACE}/fixtures/action-hostile/CONTROL_BASH_ENV_RAN" ] || fail "the BASH_ENV control did not run"
 
+      # The job summaries are rendered by GitHub and are not available through
+      # the API, so print the headline and provenance rows of each one that the
+      # runner still holds. They come from escaped Action output on inert fixtures.
+      - name: Show the headline and provenance rows of the Action summaries
+        if: always()
+        run: |
+          set -u
+          shopt -s nullglob
+          for f in "${RUNNER_TEMP}"/_runner_file_commands/step_summary_*; do
+            echo "== $(basename "${f}") ($(wc -c < "${f}") bytes)"
+            grep -hE '^### |^\*\*|Scanner source|Revision check|Scanner version|^\| Ruleset|Expected merge|Scanned revision|Action revision|Inherited build' "${f}" | cut -c1-200 | sed 's/^::/: :/'
+          done
+
       - name: Record what was tested
         if: always()
         run: |
