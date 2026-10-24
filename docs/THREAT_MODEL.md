@@ -146,12 +146,21 @@ Before a component is described as protecting against a threat in this document,
 - Offline-mode tests that confirm behavior with stale or unavailable data.
 - Published false-positive and detection results for the fixture set, with the set's limitations described.
 
-## 10. Open questions
+## 10. Known implementation gaps
+
+These are limitations of the current scanner. They are recorded here so they are resolved deliberately and not forgotten.
+
+- **Filesystem races (hardening required before enforcement or Sentinel).** The scanner canonicalizes a path, checks that it is inside the scan root, and then opens it by path. Between the check and the open, a process with write access to the tree could replace a file or directory with a symlink, so confinement to the scan root is not race-resistant. The same applies to reads of `.git`. This is acceptable only for scanning a tree that no untrusted process is modifying, such as a fresh CI checkout. Before MergeLatch is used as an enforcement gate, or Sentinel scans live developer folders, file access must be reworked to resolve paths relative to an open directory handle with no-follow semantics (for example `openat2` with `RESOLVE_BENEATH` on Linux, or an equivalent library), verify the opened handle is a regular file, and have tests that exercise the race.
+- **Time limit is detection, not cancellation.** The deadline is checked between files and during YAML parsing. A single blocking filesystem operation is not interrupted, so a scan can overrun its limit. An overrun is reported as incomplete, never clean. Strict enforcement would require running the scan in a separate process that can be terminated.
+- **Parser trust.** YAML is parsed with a third-party library. A panic is caught and reported as incomplete, but a parser that hangs or exhausts memory within the input size limit is not otherwise contained.
+- **Narrow coverage.** Only one rule exists. See the README for the current list.
+
+## 11. Open questions
 
 - Whether a standalone GitHub Action can serve as a sufficiently independent control if a PR can alter files related to its own checks, or whether a separate trusted service is needed. See the build plan for the current position.
 - Which third-party data sources and tools to rely on, and how to verify their integrity.
 - How to distribute and verify rule updates without a hosted backend.
 
-## 11. Maintenance
+## 12. Maintenance
 
 Review this document whenever a component is added, a trust boundary changes, or a security incident occurs. Changes to it are security-sensitive and need additional review as described in [CONTRIBUTING.md](../CONTRIBUTING.md).

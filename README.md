@@ -89,9 +89,10 @@ JSON reports include a `schema_version`, the scanner version, the ruleset identi
 - Only the repository root `.github/workflows` directory is read. Composite actions, reusable workflows in other repositories, and files in subdirectories are not analyzed.
 - YAML merge keys (`<<`) and aliases that point to mappings are not expanded. They make the scan incomplete rather than being ignored.
 - Files with more than one YAML document are reported as incomplete.
-- Symlinks are followed only when they resolve inside the scan root. Others are reported as incomplete.
+- Symlinks are followed only when they resolve inside the scan root at the time they are checked. Others are reported as incomplete.
 - Default limits: 1 MiB per file, 16 MiB total, 1000 directory entries, 64 levels of YAML nesting, and a 30 second time limit. The limits are not yet configurable from the command line.
-- The scanner checks paths and then reads them. It does not defend against files being changed by another process during a scan.
+- The time limit is detected, not strictly enforced. It is checked between files and during YAML parsing, but a single blocking read is not interrupted. A scan that finishes after the limit is reported as incomplete, never clean.
+- **Not safe against concurrent modification.** The scanner resolves a path, checks that it is inside the scan root, and then opens it by path. It does not use race-resistant confinement (for example directory handles with no-follow opening), so a process that can modify the scanned tree during a scan could swap a file for a symlink between the check and the read. Only scan trees that untrusted processes cannot write to during the scan, such as a fresh checkout. This must be hardened before MergeLatch is used for enforcement or in Sentinel; see the [threat model](docs/THREAT_MODEL.md#10-known-implementation-gaps).
 - Revision information is read from `.git` without running Git. Worktrees and other layouts where `.git` is not a directory report no revision.
 - Only the local directory contents are analyzed. Pull request metadata and diffs are not.
 - Test coverage was developed on Linux. Windows and macOS are untested.
