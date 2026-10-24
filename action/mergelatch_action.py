@@ -583,7 +583,7 @@ def evaluate(raw: bytes | None, exit_code: int | None, context: dict,
     """
     result: dict = {
         "status": "error", "reason": None, "report": None, "exit_code": exit_code,
-        "revision_check": "not-applicable", "observed_revision": None,
+        "revision_check": "not-checked", "observed_revision": None,
     }
     if prepare_error:
         result["reason"] = "The scan could not start: %s." % prepare_error
@@ -662,10 +662,24 @@ def _revision_label(check: str) -> str:
         "mismatch": "does NOT match the expected merge commit or head",
         "unavailable": "could not be read from the checkout",
         "not-applicable": "no expected revision for this event",
+        "not-checked": "not checked (there was no scan result to compare)",
     }[check]
 
 
+def _action_revision_label(context: dict) -> str:
+    """The immutable revision GitHub loaded the Action from, as reported by the
+    runner, or a clear statement that there is none."""
+    repository = context["action_repository"] or "unknown repository"
+    if context["action_sha"]:
+        return md("%s@%s" % (repository, context["action_sha"]), 120)
+    if context["action_ref"]:
+        return "NOT a full commit SHA (reference: %s)" % md(context["action_ref"], 40)
+    return "not reported (a local Action has no reference)"
+
+
 def _source_label(source: str, context: dict) -> str:
+    if source not in ("workspace", "action-checkout"):
+        return "not determined (the preparation step did not finish)"
     if source == "workspace":
         return ("scanner built from the checked-out workspace (a local Action): "
                 "NOT an independently pinned release")
@@ -706,6 +720,7 @@ def build_summary(result: dict, context: dict, source: str, max_findings: int,
             ("Expected PR head commit", md(context["head_sha"] or "not available", 64)),
             ("Scanned revision (as recorded by the checkout)", md(result["observed_revision"] or "not available", 64)),
             ("Revision check", _revision_label(result["revision_check"])),
+            ("Action revision", _action_revision_label(context)),
             ("Scanner source", _source_label(source, context)),
             ("Rust toolchain", md(toolchain or "unknown", 60))]
     if ignored:
@@ -799,7 +814,7 @@ def report_command(env: dict) -> int:
     build_outcome = env.get("MLA_BUILD_OUTCOME") or None
     result = evaluate(raw, exit_code, context, prepare_error, build_outcome)
     report = result["report"]
-    source = state.get("scanner_source", "action-checkout")
+    source = state.get("scanner_source", "unknown")
     max_findings = int(state.get("max_findings", DEFAULT_MAX_FINDINGS))
 
     pinned = "true" if context["action_sha"] else "false"
@@ -815,6 +830,7 @@ def report_command(env: dict) -> int:
         ("ruleset", "%s-%s" % (report["ruleset"]["id"], report["ruleset"]["version"]) if report else ""),
         ("scanner-source", source),
         ("action-pinned", pinned),
+        ("action-revision", context["action_sha"] or ""),
         ("ignored-environment-count", str(len(state.get("ignored_env") or []))),
     ]
     failures: list = []

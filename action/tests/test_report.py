@@ -384,5 +384,75 @@ class Outputs(unittest.TestCase):
                 mla.write_output(env, "Bad Name", "x")
 
 
+class ProvenanceReporting(unittest.TestCase):
+    """Regression tests for gaps found by reading the real summaries of a
+    SHA-pinned run on GitHub: the pinned SHA was not shown, an early error said
+    'no expected revision for this event', and an unknown scanner source was
+    described as pinned."""
+
+    def summary(self, data, code, ctx=None, source="action-checkout", **kw):
+        ctx = ctx or context()
+        result = mla.evaluate(raw(data) if data is not None else None, code, ctx, **kw)
+        return result, mla.build_summary(result, ctx, source, 25, "rustc 1.99.1")
+
+    def test_the_pinned_action_revision_is_shown_with_its_repository(self):
+        _, text = self.summary(report(), 0)
+        self.assertIn("| Action revision | MergeLatch/mergelatch\\@%s |" % SHA_ACTION, text)
+
+    def test_a_tag_or_branch_reference_is_called_out(self):
+        _, text = self.summary(report(), 0, ctx=context(action_ref="v1", action_sha=None))
+        self.assertIn("NOT a full commit SHA (reference: v1)", text)
+        self.assertNotIn(SHA_ACTION, text)
+
+    def test_a_local_action_has_no_reference_and_says_so(self):
+        _, text = self.summary(report(), 0, ctx=context(action_ref="", action_sha=None, action_repository=None))
+        self.assertIn("not reported (a local Action has no reference)", text)
+
+    def test_errors_before_a_scan_do_not_claim_a_revision_check_was_not_applicable(self):
+        for kwargs in ({"prepare_error": "no checkout was found"}, {"build_outcome": "failure"}):
+            result, text = self.summary(None, None, **kwargs)
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["revision_check"], "not-checked")
+            self.assertIn("not checked (there was no scan result to compare)", text)
+            self.assertNotIn("no expected revision for this event", text)
+
+    def test_a_scan_that_fails_after_running_is_also_not_checked(self):
+        result, _ = self.summary(report(), 101)
+        self.assertEqual(result["revision_check"], "not-checked")
+
+    def test_an_unknown_scanner_source_is_not_described_as_pinned(self):
+        _, text = self.summary(None, None, source="unknown", prepare_error="x")
+        self.assertIn("not determined (the preparation step did not finish)", text)
+        self.assertNotIn("pinned at the full commit SHA", text)
+
+    def test_outputs_carry_the_revision_and_the_unknown_source(self):
+        import json, pathlib, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            state = pathlib.Path(tmp, "state")
+            state.mkdir()
+            (state / "state.json").write_text(json.dumps({"error": "no checkout was found", "scan_dir": None}))
+            env = github_env(tmp, MLA_STATE_DIR=str(state), MLA_EVENT_NAME="pull_request", MLA_ACTION_REF=SHA_ACTION,
+                             MLA_ACTION_REPOSITORY="MergeLatch/mergelatch", MLA_SHA=SHA_MERGE)
+            self.assertEqual(mla.report_command(env), 1)
+            out = read_outputs(tmp)
+            self.assertEqual(out["revision-check"], "not-checked")
+            self.assertEqual(out["scanner-source"], "unknown")
+            self.assertEqual(out["action-revision"], SHA_ACTION)
+            self.assertEqual(out["action-pinned"], "true")
+
+    def test_an_unpinned_reference_leaves_the_revision_output_empty(self):
+        import json, pathlib, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            state = pathlib.Path(tmp, "state")
+            state.mkdir()
+            (state / "state.json").write_text(json.dumps({"error": None, "scan_dir": "/x", "scanner_source": "action-checkout"}))
+            (state / "report.json").write_bytes(raw(report()))
+            (state / "scan-exit-code.txt").write_text("0\n")
+            env = github_env(tmp, MLA_STATE_DIR=str(state), MLA_ACTION_REF="main")
+            mla.report_command(env)
+            out = read_outputs(tmp)
+            self.assertEqual((out["action-revision"], out["action-pinned"]), ("", "false"))
+
+
 if __name__ == "__main__":
     unittest.main()
