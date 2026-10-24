@@ -90,6 +90,39 @@ jobs:
         with:
           persist-credentials: false
 
+      # First, so that the scanner is built here for the first time with hostile
+      # settings in the environment. If any of them were honored, a marker file
+      # would appear in the fixture directory or the build would fail.
+      - name: Scan with hostile build settings inherited from the workflow
+        id: hostile_env
+        uses: ./
+        env:
+          BASH_ENV: ${{ github.workspace }}/fixtures/action-hostile/bash_env.sh
+          ENV: ${{ github.workspace }}/fixtures/action-hostile/bash_env.sh
+          CARGO_HOME: ${{ github.workspace }}/fixtures/action-hostile/cargo-home
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: ${{ github.workspace }}/fixtures/action-hostile/evil-linker.sh
+          RUSTC_WRAPPER: ${{ github.workspace }}/fixtures/action-hostile/evil-wrapper.sh
+          RUSTUP_DIST_SERVER: http://127.0.0.1:9
+          RUSTFLAGS: -C link-arg=-fno-such-flag
+        with:
+          scan-directory: fixtures/action-hostile
+
+      # Positive control: a normal bash step does honor BASH_ENV, so the check
+      # above is meaningful.
+      - name: Control, BASH_ENV in an ordinary bash step
+        env:
+          BASH_ENV: ${{ github.workspace }}/fixtures/action-hostile/control_bash_env.sh
+        run: echo "ordinary bash step"
+
+      - name: Scan with a loader variable in the environment
+        id: loader
+        continue-on-error: true
+        uses: ./
+        env:
+          LD_PRELOAD: /nonexistent/mergelatch-test-preload.so
+        with:
+          scan-directory: fixtures/action-hostile
+
       - name: Scan this repository
         id: clean
         uses: ./
@@ -133,6 +166,10 @@ jobs:
           INCOMPLETE_STATUS: ${{ steps.incomplete.outputs.status }}
           INCOMPLETE_EXIT: ${{ steps.incomplete.outputs.scanner-exit-code }}
           HOSTILE_STATUS: ${{ steps.hostile.outputs.status }}
+          HOSTILE_ENV_STATUS: ${{ steps.hostile_env.outputs.status }}
+          HOSTILE_ENV_IGNORED: ${{ steps.hostile_env.outputs.ignored-environment-count }}
+          LOADER_OUTCOME: ${{ steps.loader.outcome }}
+          LOADER_STATUS: ${{ steps.loader.outputs.status }}
           INVALID_OUTCOME: ${{ steps.invalid.outcome }}
           INVALID_STATUS: ${{ steps.invalid.outputs.status }}
         run: |
@@ -150,13 +187,23 @@ jobs:
           [ "${INCOMPLETE_STATUS}" = incomplete ] || fail "malformed fixture was not incomplete"
           [ "${INCOMPLETE_EXIT}" = 2 ] || fail "incomplete exit code was not preserved"
           [ "${HOSTILE_STATUS}" = clean ] || fail "hostile fixture scan was not clean"
+          [ "${HOSTILE_ENV_STATUS}" = clean ] || fail "scan with hostile environment settings was not clean"
+          # Proves the hostile variables reached the Action and were ignored.
+          [ "${HOSTILE_ENV_IGNORED}" -ge 5 ] || fail "hostile environment settings were not seen by the Action"
+          [ "${LOADER_OUTCOME}" = failure ] || fail "a loader variable did not fail the step"
+          [ "${LOADER_STATUS}" = error ] || fail "a loader variable was not reported as an error"
           [ "${INVALID_OUTCOME}" = failure ] || fail "invalid scan target did not fail the step"
           [ "${INVALID_STATUS}" = error ] || fail "invalid scan target was not reported as an error"
 
-      - name: Check that nothing in the scanned directory was run
+      - name: Check that nothing in the scanned directory or the hostile settings ran
         run: |
           set -euo pipefail
           if compgen -G 'fixtures/action-hostile/HOSTILE_*' > /dev/null; then
-            echo "::error title=Smoke test::a hostile build file ran"
+            echo "::error title=Smoke test::a hostile build file or setting ran"
+            exit 1
+          fi
+          # The positive control must have fired, or the checks above prove nothing.
+          if [ ! -e fixtures/action-hostile/CONTROL_BASH_ENV_RAN ]; then
+            echo "::error title=Smoke test::the BASH_ENV control did not run"
             exit 1
           fi
