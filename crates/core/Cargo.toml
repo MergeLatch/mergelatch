@@ -19,5 +19,9 @@ tempfile = "3.27.0"
 name = "rules"
 path = "../../tests/core_rules.rs"
 
+[[test]]
+name = "safety"
+path = "../../tests/core_safety.rs"
+
 [lints]
 workspace = true
