@@ -136,10 +136,10 @@ impl Context<'_> {
 
     fn check_permissions(&mut self, value: &Node, location: &str, job: Option<&str>) {
         match value {
-            Node::Scalar { line, .. } if value.as_str() == Some("write-all") => {
-                self.result
-                    .findings
-                    .push(write_all_finding(self.file, *line, location, job));
+            Node::Scalar { line, alias_of, .. } if value.as_str() == Some("write-all") => {
+                self.result.findings.push(write_all_finding(
+                    self.file, *line, *alias_of, location, job,
+                ));
             }
             Node::CollectionAlias => {
                 self.unsupported(format!("`{location}` is an alias that is not expanded"))
@@ -152,6 +152,7 @@ impl Context<'_> {
 fn write_all_finding(
     file: &WorkflowFile,
     line: usize,
+    alias_of: Option<usize>,
     location: &str,
     job: Option<&str>,
 ) -> Finding {
@@ -162,7 +163,10 @@ fn write_all_finding(
     // Built from the matched setting only. The source line is not copied, so
     // comments, other keys, and values on the same line are never disclosed.
     let key = location.rsplit('.').next().unwrap_or(location);
-    let evidence = format!("{key}: write-all");
+    let evidence = match alias_of {
+        Some(defined) => format!("{key}: write-all (alias; value defined on line {defined})"),
+        None => format!("{key}: write-all"),
+    };
     Finding {
         rule_id: RULE_WRITE_ALL.to_string(),
         severity: Severity::Medium,

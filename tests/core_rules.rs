@@ -118,9 +118,63 @@ fn permission_maps_with_write_scopes_are_out_of_scope() {
 }
 
 #[test]
-fn scalar_alias_to_write_all_is_detected() {
+fn scalar_alias_to_write_all_is_detected_at_the_use_site() {
     let report = scan_text("on: push\nx-level: &lvl write-all\npermissions: *lvl\njobs: {}\n");
     assert_eq!(report.findings.len(), 1);
+    let f = &report.findings[0];
+    assert_eq!(f.line, Some(3), "should point at the permissions setting");
+    assert_eq!(f.location, "permissions");
+    assert_eq!(
+        f.evidence,
+        "permissions: write-all (alias; value defined on line 2)"
+    );
+}
+
+#[test]
+fn multiple_aliases_each_point_at_their_own_setting() {
+    let report = scan_text(
+        "on: push\n\
+         x-level: &lvl write-all\n\
+         permissions: *lvl\n\
+         jobs:\n\
+         \x20 a:\n\
+         \x20   permissions: *lvl\n\
+         \x20 b:\n\
+         \x20   permissions: *lvl\n",
+    );
+    let found: Vec<_> = report
+        .findings
+        .iter()
+        .map(|f| (f.location.as_str(), f.line.unwrap()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("permissions", 3),
+            ("jobs.a.permissions", 6),
+            ("jobs.b.permissions", 8)
+        ]
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|f| f.evidence.ends_with("line 2)"))
+    );
+}
+
+#[test]
+fn alias_to_a_safe_value_is_not_flagged() {
+    let report = scan_text(
+        "on: push\nx-safe: &safe read-all\nx-bad: &bad write-all\npermissions: *safe\njobs: {}\n",
+    );
+    assert_eq!(report.status, ScanStatus::Clean, "{:#?}", report.findings);
+}
+
+#[test]
+fn unused_anchor_with_write_all_is_not_a_setting() {
+    let report = scan_text("on: push\nx-level: &lvl write-all\npermissions: read-all\njobs: {}\n");
+    assert_eq!(report.status, ScanStatus::Clean);
 }
 
 #[test]

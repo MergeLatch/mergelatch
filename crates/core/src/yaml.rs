@@ -16,6 +16,9 @@ pub(crate) enum Node {
         line: usize,
         /// Literal (`|`) or folded (`>`) block scalar.
         block: bool,
+        /// For a scalar that came from an alias: the line where the anchored
+        /// value is defined. `line` is then the line where the alias is used.
+        alias_of: Option<usize>,
     },
     Map(Vec<(Node, Node)>),
     Seq(Vec<Node>),
@@ -103,6 +106,7 @@ fn parse(text: &str, max_depth: usize) -> Result<Option<Node>, ParseFailure> {
                     value,
                     line: mark.line(),
                     block: matches!(style, TScalarStyle::Literal | TScalarStyle::Folded),
+                    alias_of: None,
                 };
                 if anchor > 0 {
                     scalar_anchors.insert(anchor, node.clone());
@@ -110,10 +114,19 @@ fn parse(text: &str, max_depth: usize) -> Result<Option<Node>, ParseFailure> {
                 place(node, &mut stack, &mut root);
             }
             Event::Alias(id) => {
-                let node = scalar_anchors
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or(Node::CollectionAlias);
+                // Keep the position where the alias is used; remember where the
+                // value was defined.
+                let node = match scalar_anchors.get(&id) {
+                    Some(Node::Scalar {
+                        value, block, line, ..
+                    }) => Node::Scalar {
+                        value: value.clone(),
+                        line: mark.line(),
+                        block: *block,
+                        alias_of: Some(*line),
+                    },
+                    _ => Node::CollectionAlias,
+                };
                 place(node, &mut stack, &mut root);
             }
             Event::SequenceStart(..) | Event::MappingStart(..) => {
@@ -151,6 +164,7 @@ mod tests {
             value: value.into(),
             line,
             block: false,
+            alias_of: None,
         }
     }
 
@@ -212,6 +226,23 @@ mod tests {
         };
         assert_eq!(entries[1].1.as_str(), Some("write-all"));
         assert_eq!(entries[3].1, Node::CollectionAlias);
+    }
+
+    #[test]
+    fn alias_keeps_its_own_line_and_records_the_definition_line() {
+        let node = parse_document("x: &v write-all\np: *v\nq: *v\n", 64)
+            .unwrap()
+            .unwrap();
+        let Node::Map(entries) = node else {
+            panic!("expected a mapping")
+        };
+        let alias = |i: usize| match &entries[i].1 {
+            Node::Scalar { line, alias_of, .. } => (*line, *alias_of),
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(alias(0), (1, None));
+        assert_eq!(alias(1), (2, Some(1)));
+        assert_eq!(alias(2), (3, Some(1)));
     }
 
     #[test]
