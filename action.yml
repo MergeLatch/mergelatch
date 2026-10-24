@@ -1,0 +1,105 @@
+name: MergeLatch advisory scan
+description: >-
+  Scans the GitHub workflow files in a checked-out pull request with the
+  MergeLatch scanner and writes an advisory job summary. Advisory only: not a
+  merge gate, and not a scan for malware in source code.
+inputs:
+  scan-directory:
+    description: >-
+      Directory to scan, relative to the workspace. The workspace must already
+      contain a checkout (for example from actions/checkout).
+    required: false
+    default: '.'
+  max-findings-in-summary:
+    description: Largest number of findings and incomplete entries listed in the job summary (1 to 100).
+    required: false
+    default: '25'
+outputs:
+  status:
+    description: 'clean, findings, incomplete, or error. "clean" is not proof that a change is safe.'
+    value: ${{ steps.report.outputs.status }}
+  findings-count:
+    description: Number of findings reported.
+    value: ${{ steps.report.outputs.findings-count }}
+  incomplete-count:
+    description: Number of inspections that could not finish.
+    value: ${{ steps.report.outputs.incomplete-count }}
+  files-inspected:
+    description: Number of workflow files the scanner read.
+    value: ${{ steps.report.outputs.files-inspected }}
+  scanner-exit-code:
+    description: The scanner's own exit code (0 clean, 1 findings, 2 incomplete, 3 error; other values mean it failed).
+    value: ${{ steps.report.outputs.scanner-exit-code }}
+  revision-check:
+    description: matches-merge, matches-head, mismatch, unavailable, or not-applicable.
+    value: ${{ steps.report.outputs.revision-check }}
+  scanned-revision:
+    description: Commit recorded by the checkout that was scanned. Empty when unavailable.
+    value: ${{ steps.report.outputs.scanned-revision }}
+  scanner-version:
+    description: Version of the scanner that produced the report.
+    value: ${{ steps.report.outputs.scanner-version }}
+  ruleset:
+    description: Identity of the ruleset that was applied.
+    value: ${{ steps.report.outputs.ruleset }}
+  scanner-source:
+    description: >-
+      action-checkout when the scanner was built from the Action's own
+      checkout, or workspace when the Action was loaded from the scanned
+      workspace itself (a local Action, not an independent release).
+    value: ${{ steps.report.outputs.scanner-source }}
+  action-pinned:
+    description: 'true when the Action was referenced by a full 40-character commit SHA.'
+    value: ${{ steps.report.outputs.action-pinned }}
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs and the checkout
+      id: prepare
+      shell: bash
+      env:
+        MLA_INPUT_SCAN_DIRECTORY: ${{ inputs.scan-directory }}
+        MLA_INPUT_MAX_FINDINGS: ${{ inputs.max-findings-in-summary }}
+        MLA_ACTION_PATH: ${{ github.action_path }}
+        MLA_WORKSPACE: ${{ github.workspace }}
+        MLA_EVENT_NAME: ${{ github.event_name }}
+      run: python3 -I "$MLA_ACTION_PATH/action/mergelatch_action.py" prepare
+
+    - name: Build the scanner from the Action source
+      id: build
+      if: steps.prepare.outputs.ok == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        MLA_ACTION_ROOT: ${{ steps.prepare.outputs.action-root }}
+        MLA_STATE_DIR: ${{ steps.prepare.outputs.state-dir }}
+        MLA_ACTION_PATH: ${{ github.action_path }}
+      run: bash "$MLA_ACTION_PATH/action/build.sh"
+
+    - name: Scan the checkout
+      id: scan
+      if: always() && steps.prepare.outputs.ok == 'true'
+      shell: bash
+      env:
+        MLA_STATE_DIR: ${{ steps.prepare.outputs.state-dir }}
+        MLA_ACTION_PATH: ${{ github.action_path }}
+      run: python3 -I "$MLA_ACTION_PATH/action/mergelatch_action.py" scan
+
+    - name: Report
+      id: report
+      if: always()
+      shell: bash
+      env:
+        MLA_STATE_DIR: ${{ steps.prepare.outputs.state-dir }}
+        MLA_ACTION_PATH: ${{ github.action_path }}
+        MLA_BUILD_OUTCOME: ${{ steps.build.outcome }}
+        MLA_EVENT_NAME: ${{ github.event_name }}
+        MLA_SHA: ${{ github.sha }}
+        MLA_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MLA_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        MLA_REPOSITORY: ${{ github.repository }}
+        MLA_RUN_ID: ${{ github.run_id }}
+        MLA_RUN_ATTEMPT: ${{ github.run_attempt }}
+        MLA_ACTION_REF: ${{ github.action_ref }}
+        MLA_ACTION_REPOSITORY: ${{ github.action_repository }}
+      run: python3 -I "$MLA_ACTION_PATH/action/mergelatch_action.py" report
