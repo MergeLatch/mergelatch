@@ -41,7 +41,7 @@ How the separation is kept:
 - The scanner runs with the same minimal fixed environment as the build (`PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `LANG`; no tokens, no `GITHUB_*` values, nothing from the workflow), from a private state directory, with a time limit and an output size limit.
 - Inputs and GitHub context reach the scripts only through environment variables, never inside a shell command. Pull request titles, bodies, branch names, and file names are not used for anything executable.
 - Everything in the scanner's report is treated as untrusted. It is validated against the report schema (types, enums, counts, and consistency between the status and the lists), then truncated and Markdown/HTML-escaped before it enters the job summary. Control and bidirectional-format characters are shown as `\u{..}`. Nothing from the report is written to the workflow log.
-- The Action refuses to run when the event is `pull_request_target` or `workflow_run`, which give workflows secrets or a write-capable token. This is a refusal list of exactly those two names, not a list of allowed events; see [Events](#events).
+- **Only the `pull_request` event is accepted.** Preparation checks the event name against an exact allowlist; every other name, including `pull_request_target` and `workflow_run` (which give workflows secrets or a write-capable token), is rejected. See [Events](#events). On the branch that implements this (decision D-1) it has not yet run as a pinned Action; the commit `afc7e65…` tested below used a refusal list of two names.
 - **Runner restrictions are enforced, not only documented.** The Action stops with an error unless the runner is Linux (`runner.os`), GitHub-hosted (`runner.environment`), x86-64 (`runner.arch`), and its image reports `ID=ubuntu` in `/etc/os-release`. Self-hosted runners and ARM runners are refused because the scanner's file confinement has only been verified on x86-64 Linux. These values come from the runner context and the image, so they are checked at run time; a self-hosted runner that misreports them is outside what the Action can detect.
 - If the Action is loaded from the scanned workspace itself (`uses: ./`), the summary and the `scanner-source` output say so: in that case the scanner code comes from the pull request and is **not** an independent release. The repository's own smoke test works this way.
 
@@ -71,15 +71,13 @@ There is deliberately no input that makes findings fail the job. That would impl
 
 ## Events
 
-The Action is designed, documented, and trial-tested for the `pull_request` event. What the helper actually does with each event name was checked by running its `prepare` step on 17 names (and is pinned by `test_privileged_events_are_refused`):
+The Action accepts exactly one event, `pull_request`, by an exact string comparison in the preparation step. No name is normalized: `Pull_Request`, `pull_request ` (padded), an empty or missing name, and every other event (`pull_request_target`, `workflow_run`, `push`, `schedule`, `workflow_dispatch`, `repository_dispatch`, `issue_comment`, `issues`, `pull_request_review`, `pull_request_review_comment`, `merge_group`, `workflow_call`, `release`, `fork`, and unrecognized names) are rejected.
 
-| Event | Behavior |
-| --- | --- |
-| `pull_request` | Runs. The only event with an expected revision, so the only one that can report `matches-merge`, `matches-head`, or `mismatch` |
-| `pull_request_target`, `workflow_run` | Refused with an error before anything is built or scanned |
-| Every other event (for example `push`, `schedule`, `workflow_dispatch`, `issue_comment`, `pull_request_review`, `merge_group`) | **Not refused.** The scan runs, `revision-check` is `not-applicable`, and the summary says there is no expected revision. These events are unsupported and untested |
+For a rejected event the preparation step records a fixed error message (it does not repeat the event value), the build and scan steps are skipped, no repository content is read, the report step produces status `error` with `revision-check` = `not-checked`, and the Action step fails. It is never reported as clean. This is covered by tests that follow 26 event values through preparation, scan, and report ([`RejectedEvent`](../action/tests/test_prepare_scan.py)) and a static test that `action.yml` skips build and scan unless preparation succeeded.
 
-The refusal is a guard on this Action, not a security boundary. A workflow that runs under a privileged event can check out and execute pull request code with its own steps whether or not this Action refuses to run, and the Action cannot see how the rest of the job is built. The Action itself uses no secrets and starts its children with an environment built from fixed values, so running it under another event does not give the scanner a token. Do not run it on events other than `pull_request`. Whether to turn the refusal list into an allowlist is an open decision recorded in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions). GitHub documents that a reusable workflow sees the caller's event name; that was not tested here.
+History. Until decision D-1, the helper refused only `pull_request_target` and `workflow_run` and let every other event run with `revision-check` = `not-applicable` (finding F-01 in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions)). That was reproduced on 17 event names and was a documentation inconsistency, not a demonstrated vulnerability. The commit `afc7e65…` and its recorded trials have that earlier behavior.
+
+The allowlist reduces accidental unsupported use. It is not a security boundary: a workflow that runs under a privileged event can check out and execute pull request code with its own steps whether or not this Action runs, and the Action cannot see how the rest of the job is built. Only the `pull_request` event has an expected revision, so only it can report `matches-merge`, `matches-head`, or `mismatch`. GitHub documents that a reusable workflow sees the caller's event name; that was not tested here. The new behavior has not yet run as a pinned Action on GitHub; that verification is planned in [RELEASE_PLAN.md](RELEASE_PLAN.md).
 
 ## What revision is scanned
 
@@ -105,7 +103,7 @@ A green check means only that the job ran. It is never evidence that a pull requ
 
 ## Permissions and supported platforms
 
-The Action needs no token permissions of its own. Use `permissions: contents: read` (the minimum for `actions/checkout`) and no secrets. It supports GitHub-hosted Ubuntu runners on x86-64 only (`ubuntu-24.04` is the one tested), because the scanner's race-resistant file access is verified only there. The Action enforces this at run time and refuses self-hosted, non-Linux, non-Ubuntu, and ARM runners. It never uses the network for anything except downloading the pinned Rust toolchain and the locked crates.
+The Action needs no token permissions of its own. Use `permissions: contents: read` (the minimum for `actions/checkout`) and no secrets. It runs only on the `pull_request` event. It supports GitHub-hosted Ubuntu runners on x86-64 only (`ubuntu-24.04` is the one tested), because the scanner's race-resistant file access is verified only there. The Action enforces this at run time and refuses self-hosted, non-Linux, non-Ubuntu, and ARM runners. It never uses the network for anything except downloading the pinned Rust toolchain and the locked crates.
 
 The build downloads the pinned Rust toolchain and the locked crates, which takes a few minutes on a cold runner and needs network access to `static.rust-lang.org` and `crates.io`.
 
@@ -152,7 +150,7 @@ Details, caveats, and what these runs do not show are in [EXTERNAL_TRIAL.md](EXT
 
 The Action implementation is `action.yml`, `action/mergelatch_action.py`, `action/build.sh`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, and `crates/`. A consumer who pins a commit receives the whole repository at that commit, but only these paths are built or run.
 
-Only `afc7e65d6723029c22935f82c7fc9562d5831565` itself has been run as a pinned Action. A later commit has a different SHA and has **not** been run as an immutable Action unless a run for that exact SHA is recorded here. As of the review-readiness work (main at `4af8f9aa9340fee38abb7c9f3b554c53ad645d64`), every path above has the same git object ID as at `afc7e65…` (checked with `git rev-parse <commit>:<path>`), so the implementation is byte-identical and only workflows, tests, and documentation differ. That is a statement about identical files, not a new test. The check to repeat for any later commit is:
+Only `afc7e65d6723029c22935f82c7fc9562d5831565` itself has been run as a pinned Action. A later commit has a different SHA and has **not** been run as an immutable Action unless a run for that exact SHA is recorded here. As of the review-readiness work (main at `4af8f9aa9340fee38abb7c9f3b554c53ad645d64`), every path above had the same git object ID as at `afc7e65…` (checked with `git rev-parse <commit>:<path>`), so the implementation was byte-identical. The event-allowlist change (decision D-1) then changed `action/mergelatch_action.py`, so commits from that change onward are **not** the implementation that `afc7e65…` verified. That is a statement about identical files, not a new test. The check to repeat for any later commit is:
 
 ```
 git diff --quiet afc7e65d6723029c22935f82c7fc9562d5831565 <commit> -- \

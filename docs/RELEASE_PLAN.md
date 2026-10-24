@@ -43,7 +43,11 @@ It does not make the candidate SHA a tested immutable Action. A SHA is a distinc
 
 The exact candidate is chosen when the blockers close. It is not named here because it does not exist yet, and this document does not claim otherwise.
 
-### If an implementation path changes (for example D-1)
+### The implementation has changed (D-1)
+
+Decision D-1 has been implemented: `action/mergelatch_action.py` now accepts only the `pull_request` event. Any commit that contains it is a new implementation. The procedure below therefore applies to the candidate; `afc7e65…` remains the evidence for the earlier implementation only. The corrected implementation has not completed these checks.
+
+### If an implementation path changes
 
 The previously verified SHA `afc7e65…` then no longer represents the corrected implementation. Targeted re-verification, for the new commit `N`, before it is tagged:
 
@@ -101,7 +105,7 @@ For the release notes and README, once a release exists. Until then the example 
 
 ## Supported platforms and known limitations
 
-Supported: GitHub-hosted `ubuntu-24.04`, x86-64, the `pull_request` event, `contents: read`. Not supported and refused or untested: self-hosted, Windows, macOS, ARM, other events, private-repository behavior, and GitHub Enterprise Server.
+Supported: GitHub-hosted `ubuntu-24.04`, x86-64, the `pull_request` event, `contents: read`. Refused at run time: other events (D-1), self-hosted, Windows, macOS, and ARM runners. Untested: private-repository behavior and GitHub Enterprise Server.
 
 The full list of limitations is in [REVIEW_READINESS.md](REVIEW_READINESS.md#known-limitations) and [ACTION.md](ACTION.md#known-limitations). The release notes must repeat at least these: advisory only; four narrow rules on workflow files; no malware scanning; findings and incomplete scans do not fail the step; the caller's workflow can be edited by a pull request; the toolchain and crates are downloaded and built on every run; Windows Sentinel and Agent Guard do not exist; this is a pre-release.
 
