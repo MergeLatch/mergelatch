@@ -421,3 +421,85 @@ fn unresolved_repository_with_head_ref_reports_both_the_finding_and_the_limit() 
     assert_eq!(rule(&report).len(), 1);
     assert_eq!(report.status, ScanStatus::Incomplete);
 }
+
+// ---- Commands that look safe but can run programs ---------------------------
+
+/// A head checkout followed by one `run:` line.
+fn after_head_checkout(command: &str) -> Report {
+    scan_text(&format!(
+        "on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@{SHA}\n        with:\n          ref: ${{{{ github.event.pull_request.head.sha }}}}\n      - run: {command}\n"
+    ))
+}
+
+#[test]
+fn git_alias_execution_after_a_head_checkout_is_flagged() {
+    // These were previously classified as safe because the command name was `git`.
+    for command in [
+        "\"git -c alias.t='!npm test' t\"",
+        "\"git config alias.t '!make' && git t\"",
+        "\"git rebase --exec make main\"",
+        "\"git bisect run ./check\"",
+        "\"git submodule foreach make\"",
+    ] {
+        let report = after_head_checkout(command);
+        assert_eq!(rule(&report).len(), 1, "{command}: {:#?}", report);
+    }
+}
+
+#[test]
+fn other_programs_that_run_commands_are_flagged() {
+    for command in [
+        "\"sed 's/a/b/e' file\"",
+        "\"awk 'BEGIN{system(\\\"make\\\")}'\"",
+        "\"gh alias set t '!npm test'\"",
+        "\"tar -xf a.tar --to-command=sh\"",
+        "\"env -S 'npm test'\"",
+    ] {
+        let report = after_head_checkout(command);
+        assert_eq!(rule(&report).len(), 1, "{command}: {:#?}", report);
+    }
+}
+
+#[test]
+fn ordinary_commands_after_a_head_checkout_stay_clean() {
+    for command in [
+        "\"git diff --stat origin/main...HEAD\"",
+        "\"git log --oneline -n 5\"",
+        "\"gh pr comment 1 --body ok\"",
+        "\"sed -n '1,5p' README.md\"",
+        "\"awk '{print $1}' README.md\"",
+        "\"tar -cf out.tar README.md\"",
+        "\"command -v npm\"",
+    ] {
+        let report = after_head_checkout(command);
+        assert_eq!(report.status, ScanStatus::Clean, "{command}: {:#?}", report);
+    }
+}
+
+#[test]
+fn ambiguous_command_forms_after_a_head_checkout_are_analysis_limits() {
+    for command in [
+        "\"git mycommand\"",
+        "\"sed -f script.sed file\"",
+        "\"awk -f prog.awk file\"",
+        "\"gh some-extension\"",
+        "\"alias t='npm test'\"",
+    ] {
+        let report = after_head_checkout(command);
+        assert_eq!(report.status, ScanStatus::Incomplete, "{command}");
+        assert_eq!(
+            report.incomplete[0].kind,
+            IncompleteKind::AnalysisLimit,
+            "{command}"
+        );
+        assert!(rule(&report).is_empty(), "{command}");
+    }
+}
+
+#[test]
+fn the_same_commands_before_any_pull_request_checkout_are_not_analyzed() {
+    let report = scan_text(
+        "on: pull_request_target\njobs:\n  a:\n    steps:\n      - run: git -c alias.t='!npm test' t\n",
+    );
+    assert_eq!(report.status, ScanStatus::Clean);
+}
