@@ -113,6 +113,21 @@ The build downloads the pinned Rust toolchain and the locked crates, which takes
 
 On `pull_request` from a fork the token is read-only and secrets are not available, which suits this Action. GitHub may require approval before workflows run for some first-time contributors. The historical and corrected-SHA external-fork trials both required maintainer approval after an initial `action_required` result. In the corrected-SHA trial ([consumer PR #6](https://github.com/MergeLatch/mergelatch-consumer-trial/pull/6), [run 40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817), attempt 2), a first-time contributor changed only `README.md`; the approved job passed with `action-revision` = `2a1a514b94754b146a690cf98ef59bc649d423ff`, `action-pinned` = `true`, `scanner-source` = `action-checkout`, `revision-check` = `matches-merge`, clean repository scan, one fixture finding, and one incomplete fixture. The fork PR was closed unmerged. That evidence does not cover a contributor editing the caller's workflow. Approve a run only after reading what the pull request changes under `.github/`; a pull request can edit the workflow that calls this Action. Because nothing is written back to the pull request, results appear only in the job summary and annotations of that run.
 
+## What the Action can and cannot protect
+
+This is the disposition of audit finding F-05 (steps that ran earlier in the same job); the evidence is in [REVIEW_READINESS.md](REVIEW_READINESS.md#f-05-earlier-steps-in-the-same-job) and the trial [`action-f05-trial.yml`](../.github/workflows/action-f05-trial.yml) ([run 40129287435](https://github.com/MergeLatch/mergelatch/actions/runs/40129287435)).
+
+**Protected (reproduced on a GitHub-hosted runner).** Settings and `PATH` entries that an earlier step persists through `GITHUB_ENV` and `GITHUB_PATH` do not reach the Action's code: it runs under an absolute `/usr/bin/python3 -I`, builds its child environments from fixed values and refuses `LD_*`. In the same trial, attempts to set `RUNNER_TEMP`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` and the other reserved names that way did not take effect (observed, not a documented runner guarantee).
+
+**Not protected (reproduced).** An earlier step runs as the same user as the Action, with passwordless `sudo`. It can replace `~/.cargo/bin/cargo` (the Action's build runs it), change the files in the workspace (the revision check reads the commit, not the files), and leave a background process that rewrites the Action's state files so that the Action reports a `clean`, correctly pinned result for a scan that found something. This cannot be prevented from inside the job, so it is not claimed to be.
+
+**What to do.**
+
+- Run the Action in a job of its own, with only the checkout before it. Each job gets a fresh runner.
+- If it must share a job, put it right after the checkout and before any step that installs, builds or tests pull request code.
+- Treat a result as untrustworthy for any checkout that code in the same job could have changed.
+- A required, enforcing check needs a separately trusted workflow or service that never runs pull request code, a verified scanner artifact, and a revision bound to the result. None exists yet.
+
 ## Why this is not a merge gate
 
 - A `pull_request` workflow runs the version of the workflow file from the pull request. The contribution being checked can edit or delete the MergeLatch step, change its inputs, or add `continue-on-error`.
@@ -271,7 +286,7 @@ The F-08 helper merged in [PR #21](https://github.com/MergeLatch/mergelatch/pull
 - Filesystem and platform limits of the scanner (Linux only, residual races) apply. See the threat model.
 - The Python helper, the build, and the downloaded toolchain and crates are part of the trusted computing base.
 - **Build timeout.** The build is limited to 1,500 seconds. It runs in its own process group, and on timeout the whole group is killed and the step fails with status `error`. Earlier versions killed only the build script and left `cargo`, `rustc` and their children running (finding F-08). A build process that deliberately starts a new session escapes the group kill, and the kill is immediate, not graceful. The corrected F-08 helper has passed both a source and separate consumer SHA-pinned trial, but has not received independent security sign-off or a release.
-- The runner's own Rust installation (`~/.cargo/bin`, `~/.rustup`, and any `config.toml` in `~/.cargo`) and the system Python and bash are trusted. A previous step that runs untrusted code in the same job could modify them or the files the runner uses to carry settings between steps (`GITHUB_ENV`, `GITHUB_PATH`); run this Action before any step that executes pull request code, and do not add such steps to the same job.
+- The runner's own Rust installation (`~/.cargo/bin`, `~/.rustup`, and any `config.toml` in `~/.cargo`), the system Python and bash, the workspace, and the files that carry state between the Action's steps are trusted. A previous step in the same job that runs untrusted code (or leaves a process running) can modify them, with no way for the Action to notice; this was reproduced (finding F-05, see [above](#what-the-action-can-and-cannot-protect)). Planted `GITHUB_ENV` settings and `GITHUB_PATH` entries are ignored. Run the Action in its own job, or immediately after the checkout, and never after a step that executes pull request code.
 - `LD_*` and `GCONV_PATH` are detected, not neutralized: by the time the Action can see them, the loader has already acted on them. The Action fails closed instead of continuing.
 - Settings are removed by building the child environment from fixed values. Settings that change how the already-running Python behaves, other than `PYTHON*` (ignored by `-I`) and the loader variables above, are not known and are not checked.
 - The runner restrictions rely on the runner context and `/etc/os-release`. They stop honest misconfiguration, not a self-hosted runner built to lie.

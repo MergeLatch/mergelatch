@@ -40,6 +40,10 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    # Keep this job to the checkout and the scan: no step that installs, builds or
+    # tests pull request code. Anything that runs earlier in the same job runs as
+    # the same user and can change the result (audit finding F-05). Put such steps
+    # in a different job.
     steps:
       # By default on pull_request this checks out the merge result of the pull
       # request and the base branch (github.sha). That is the revision the scan
