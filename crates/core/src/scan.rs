@@ -17,6 +17,13 @@ use crate::{
 pub const RULESET_ID: &str = "mergelatch-builtin";
 pub const RULESET_VERSION: &str = "1";
 
+/// Distinct findings held in memory before the scan stops analyzing more
+/// files. Well above what a report lists, so the report keeps a choice of
+/// findings, but low enough that the scan cannot be made to hold hundreds of
+/// megabytes. One file is always analyzed in full, so the most held is this
+/// plus what a single file of at most `max_file_bytes` can produce.
+const MAX_HELD_FINDINGS: usize = 20_000;
+
 /// The scan could not run. This is distinct from an incomplete scan, which
 /// produces a [`Report`].
 #[derive(Debug)]
@@ -47,7 +54,13 @@ impl std::error::Error for ScanError {}
 /// Files are read as data. Nothing in the directory is executed, and Git is
 /// not run.
 pub fn scan_directory(root: &Path, limits: &ScanLimits) -> Result<Report, ScanError> {
-    scan_with(root, limits, read_revision_from, Instant::now)
+    scan_with(
+        root,
+        limits,
+        MAX_HELD_FINDINGS,
+        read_revision_from,
+        Instant::now,
+    )
 }
 
 /// The scan itself, with the revision reader and clock supplied so tests can
@@ -56,6 +69,7 @@ pub fn scan_directory(root: &Path, limits: &ScanLimits) -> Result<Report, ScanEr
 fn scan_with(
     root: &Path,
     limits: &ScanLimits,
+    max_held_findings: usize,
     revision: impl FnOnce(&Dir) -> Option<Revision>,
     now: impl Fn() -> Instant,
 ) -> Result<Report, ScanError> {
@@ -78,7 +92,7 @@ fn scan_with(
     let discovery = discover_workflows(&root_dir, limits, deadline);
     let mut findings = Vec::new();
     let mut incomplete = discovery.incomplete;
-    for file in &discovery.files {
+    for (position, file) in discovery.files.iter().enumerate() {
         if now() >= deadline {
             incomplete.push(Incomplete {
                 path: None,
@@ -95,6 +109,23 @@ fn scan_with(
             .any(|i| i.kind == IncompleteKind::Timeout);
         incomplete.extend(result.incomplete);
         if timed_out {
+            break;
+        }
+        if findings.len() > max_held_findings {
+            findings.sort();
+            findings.dedup();
+        }
+        if findings.len() > max_held_findings {
+            let skipped = discovery.files.len() - position - 1;
+            if skipped > 0 {
+                incomplete.push(Incomplete {
+                    path: None,
+                    kind: IncompleteKind::LimitExceeded,
+                    detail: format!(
+                        "analysis stopped after more than {max_held_findings} findings; {skipped} workflow files were not analyzed"
+                    ),
+                });
+            }
             break;
         }
     }
@@ -162,6 +193,7 @@ mod tests {
         let report = scan_with(
             dir,
             &limits(),
+            MAX_HELD_FINDINGS,
             |_| {
                 late.set(revision_is_slow);
                 None
@@ -207,6 +239,7 @@ mod tests {
         let report = scan_with(
             dir.path(),
             &limits(),
+            MAX_HELD_FINDINGS,
             |_| None,
             || {
                 calls.set(calls.get() + 1);
@@ -225,5 +258,88 @@ mod tests {
             .count();
         assert_eq!(report.status, ScanStatus::Incomplete);
         assert_eq!(timeouts, 1);
+    }
+
+    /// A repository whose only workflows are the ones a test adds.
+    fn bare_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".github/workflows")).unwrap();
+        dir
+    }
+
+    fn workflow_with_unpinned_steps(dir: &Path, name: &str, steps: usize) {
+        let body: String = (0..steps)
+            .map(|i| format!("      - uses: actions/checkout@v{i}\n"))
+            .collect();
+        fs::write(
+            dir.join(".github/workflows").join(name),
+            format!("on: pull_request\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: x\n    steps:\n{body}"),
+        )
+        .unwrap();
+    }
+
+    fn scan_holding(dir: &Path, held: usize) -> Report {
+        scan_with(dir, &limits(), held, |_| None, Instant::now).unwrap()
+    }
+
+    #[test]
+    fn analysis_stops_once_enough_findings_are_held_and_says_what_was_skipped() {
+        let dir = bare_repo();
+        workflow_with_unpinned_steps(dir.path(), "a.yml", 30);
+        workflow_with_unpinned_steps(dir.path(), "b.yml", 30);
+        workflow_with_unpinned_steps(dir.path(), "c.yml", 30);
+        let report = scan_holding(dir.path(), 40);
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        let notes: Vec<_> = report
+            .incomplete
+            .iter()
+            .filter(|i| i.kind == IncompleteKind::LimitExceeded)
+            .collect();
+        assert_eq!(notes.len(), 1, "{:?}", report.incomplete);
+        assert!(
+            notes[0]
+                .detail
+                .contains("1 workflow files were not analyzed")
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.file != ".github/workflows/c.yml")
+        );
+        assert_eq!(report.findings.len(), 60);
+        // The count is of files read, not of files analyzed; the note says how many were skipped.
+        assert_eq!(report.summary.files_inspected, 3);
+    }
+
+    #[test]
+    fn nothing_is_skipped_when_the_last_file_crosses_the_threshold() {
+        let dir = bare_repo();
+        workflow_with_unpinned_steps(dir.path(), "a.yml", 30);
+        let report = scan_holding(dir.path(), 10);
+        assert_eq!(report.status, ScanStatus::Findings);
+        assert_eq!(report.findings.len(), 30);
+    }
+
+    #[test]
+    fn a_scan_below_the_threshold_is_unchanged() {
+        let dir = bare_repo();
+        workflow_with_unpinned_steps(dir.path(), "a.yml", 30);
+        workflow_with_unpinned_steps(dir.path(), "b.yml", 30);
+        let report = scan_holding(dir.path(), 60);
+        assert_eq!(report.status, ScanStatus::Findings);
+        assert_eq!(report.findings.len(), 60);
+    }
+
+    #[test]
+    fn the_same_input_gives_the_same_report() {
+        let dir = bare_repo();
+        workflow_with_unpinned_steps(dir.path(), "a.yml", 30);
+        workflow_with_unpinned_steps(dir.path(), "b.yml", 30);
+        workflow_with_unpinned_steps(dir.path(), "c.yml", 30);
+        assert_eq!(
+            scan_holding(dir.path(), 40).to_json(),
+            scan_holding(dir.path(), 40).to_json()
+        );
     }
 }

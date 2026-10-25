@@ -73,7 +73,7 @@ Use the exit code, not the absence of output, to decide whether a scan passed. I
 
 - **clean**: every `.github/workflows/*.yml` and `*.yaml` file was read and parsed, and no rule matched. It does not mean the repository is safe.
 - **findings**: a rule matched. Each finding shows the file, line, YAML location, short evidence taken from the matching setting or expression (not the whole source line), an explanation, and a suggested fix. A finding is a configuration to review, not proof of malicious intent.
-- **incomplete**: at least one inspection did not finish. The report lists each file and the reason: unreadable, not a regular file, outside the scan root, too large, invalid UTF-8, invalid or unsupported YAML, a construct the rules cannot analyze (`analysis_limit`), a resource limit, or a timeout.
+- **incomplete**: at least one inspection did not finish. The report lists each file and the reason: unreadable, not a regular file, outside the scan root, too large, invalid UTF-8, invalid or unsupported YAML, a construct the rules cannot analyze (`analysis_limit`), a resource limit (including a report with more findings than it can list, which keeps the highest severities and says how many were left out), or a timeout.
 - **error**: the scan could not start.
 
 JSON reports include a `schema_version`, the scanner version, the ruleset identity, the limits in force, the target path, and the Git commit when it can be read from `.git`. They contain no timestamps, so the same input produces the same report.
