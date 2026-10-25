@@ -106,6 +106,10 @@ pub struct Target {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Summary {
+    /// Workflow files that were discovered and read. This is not a count of
+    /// files whose analysis finished: when analysis stops early (a timeout or
+    /// the held-findings threshold), the files not analyzed are still counted
+    /// here, and an incomplete entry says so.
     pub files_inspected: usize,
     pub findings: usize,
     pub incomplete: usize,

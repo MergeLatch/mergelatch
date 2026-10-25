@@ -59,7 +59,7 @@ There is deliberately no input that makes findings fail the job. That would impl
 | Output | Meaning |
 | --- | --- |
 | `status` | `clean`, `findings`, `incomplete`, or `error` |
-| `findings-count`, `incomplete-count`, `files-inspected` | Counts from the report |
+| `findings-count`, `incomplete-count`, `files-inspected` | Counts from the report. `findings-count` and `incomplete-count` count the entries the report lists. `files-inspected` counts the workflow files the scanner discovered and read, including any it did not get to analyze because the scan stopped early (a timeout or the held-findings threshold); an incomplete entry says how many were skipped |
 | `scanner-exit-code` | The scanner's own exit code, unchanged (`0` clean, `1` findings, `2` incomplete, `3` error; anything else means it failed) |
 | `revision-check` | `matches-merge`, `matches-head`, `mismatch`, `unavailable`, `not-applicable`, or `not-checked` (the run failed before there was a result to compare) |
 | `scanned-revision` | The commit the checkout recorded, if readable |

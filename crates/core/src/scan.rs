@@ -308,6 +308,8 @@ mod tests {
                 .all(|f| f.file != ".github/workflows/c.yml")
         );
         assert_eq!(report.findings.len(), 60);
+        // The count is of files read, not of files analyzed; the note says how many were skipped.
+        assert_eq!(report.summary.files_inspected, 3);
     }
 
     #[test]
