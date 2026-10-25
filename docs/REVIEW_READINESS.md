@@ -231,7 +231,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 | F-04 | Design limitation | consumer workflow | A pull request can edit or remove the caller's step | High if used as a gate; none as advisory | Documented; fork trial did not try it | Documented and prohibited as a required check |
 | F-05 | **Confirmed behavior; architectural limitation** (was documented but not reproduced) | job composition | A prior same-job step (or a process it leaves running) runs as the same user, with passwordless `sudo` on GitHub-hosted runners, so it can change the Rust installation, the workspace, the state files, and the scanner the Action runs. Planted `GITHUB_ENV` settings and `GITHUB_PATH` entries are neutralized | High if the Action followed a step that runs pull request code and were used as a gate; none as advisory run first | Yes, on a GitHub-hosted runner with harmless stand-ins (run [40129287435](https://github.com/MergeLatch/mergelatch/actions/runs/40129287435)) | No change to the Action: no in-job fix can be a boundary. Documented; own-job guidance strengthened; a trusted enforcement design is needed for any gate |
 | F-06 | Accepted risk | `build.sh`, `Cargo.lock` | The build runs the code of 13 build scripts and proc-macros from crates.io and downloads a toolchain, with no verification beyond rustup and cargo's own | Medium (supply chain) | n/a | Reviewer decision D-4 |
-| F-07 | Unverified hypothesis | helper start-up | Inherited variables other than those listed (for example glibc tunables) could affect the already-running Python | Low | No | Needs workflow-author control; documented as unknown |
+| F-07 | **Characterized**: partly confirmed protection, confirmed limitation, remaining hypotheses | helper start-up | Inherited settings that act before or while `/usr/bin/python3 -I` starts. `PYTHON*` and the working directory are ignored; `LD_*` loads code before any Action code runs and is only detected; the five `GLIBC_TUNABLES` sets and the other non-loader settings tried here did not run the marker library or change the result (observed scope only, see the F-07 section) | Low | Yes, with marker files on a GitHub-hosted runner (run [40132358637](https://github.com/MergeLatch/mergelatch/actions/runs/40132358637)) | No production change. Loader variables stay refused (detection, not prevention); `GLIBC_TUNABLES` is not refused. Tests pin the boundary. Not independently reviewed |
 | F-08 | **Confirmed behavior** (was an unverified hypothesis) | `build()` | On the 1,500 s build timeout only the direct `bash` child was killed; `cargo`/`rustc` and other descendants kept running | Low | Yes, with fake tools and a 2 s timeout | The step already failed closed. **Fixed and merged at `c5296cef5fd3ffc36f1b8f0649e6491050606275` in PR #21; verified by pinned source (40125146676) and consumer (40126418768) GitHub runs; not independently reviewed or released** |
 | F-09 | Confirmed behavior | `crates/cli/src/main.rs` | Errors writing the report to stdout are ignored; exit code still reflects the scan | Informational | Yes | Documented; the Action rejects a truncated report |
 | F-10 | Limitation | scanner deadline | The 30 s limit is detected, not enforced mid-operation; 300 s helper timeout bounds it | Low | Probed, not proven | Documented |
@@ -263,7 +263,7 @@ Severity scale used here: **Low** means limited effect or requires the workflow 
 
 ### F-04 to F-12
 
-See the table. F-04 and F-05 are the main reasons the Action must not be used as an enforcement gate. F-07 is stated as a hypothesis because it was not reproduced, and should be confirmed or dismissed by the reviewer. F-05 was reproduced (see its section below).
+See the table. F-04 and F-05 are the main reasons the Action must not be used as an enforcement gate. F-05 and F-07 were reproduced on GitHub-hosted runners (see their sections below); F-07 leaves some hypotheses open.
 
 ### F-05. Earlier steps in the same job
 
@@ -283,7 +283,7 @@ Scope: only what a step that ran earlier in the **same job** can do to the Actio
 **Unverified hypotheses (not tested):**
 
 - Replacing `/usr/bin/python3` or `/usr/bin/bash` through `sudo` (expected to work; not attempted).
-- Variables other than those above, including kernel and glibc settings, are F-07.
+- Variables other than those above, including kernel and glibc settings, are F-07 (characterized below).
 - Whether a process started with a new session survives to a later step on a runner image other than `ubuntu-24.04`. The behavior is the runner's, not the Action's.
 - A same-user process poisoning `~/.cargo/registry` sources; not tried, same class as the wrapper.
 - `MLA_SCAN_TIMEOUT` can come from the job environment. It was only observed to be accepted by the runner; its effect is covered by an existing unit test (a short value makes the scan an `error`). A long value could only keep the step running until the job's own timeout. It cannot make a failed scan look clean.
@@ -300,6 +300,55 @@ Scope: only what a step that ran earlier in the **same job** can do to the Actio
 - Never make the result a required check or an input to automatic merging.
 
 - **Disposition:** confirmed as an architectural limitation of an in-job advisory check. **No code change.** Documentation updated ([ACTION.md](ACTION.md#what-the-action-can-and-cannot-protect), [THREAT_MODEL.md](THREAT_MODEL.md), the example workflow) and the trial added as evidence. Awaiting independent review; not released.
+
+### F-07. Inherited start-up environment
+
+Scope: environment settings present when the runner starts one of the Action's steps (`/usr/bin/python3 -I`) that can act **before** the helper's first line runs, while the interpreter starts, or later in the helper's children. Settings written by an earlier step (F-05) and the caller's own `env:` (F-04) are the same trust level and are not separate attackers. Evidence: [`action-f07-trial.yml`](../.github/workflows/action-f07-trial.yml), [run 40132358637](https://github.com/MergeLatch/mergelatch/actions/runs/40132358637) on a GitHub-hosted `ubuntu-24.04` runner (glibc 2.39-0ubuntu8.9), the Action loaded by full SHA `e099dcda2ff957b8dbe8c2dc70080880bab1cde2`; the trial only observes markers and flags and runs no pull request code. The trial runs only for a pull request that changes it. A first run of the Python job failed because of a bug in the trial script (a control that is meant to fail ran under `bash -e`), not because of behaviour; it was fixed and the job passed.
+
+**The start-up boundary, in order.**
+
+1. *The dynamic loader (before Python exists).* `LD_*` and `GCONV_PATH` are read by the loader or C library and can load code into the process. Python's isolated mode cannot affect this.
+2. *Python start-up.* `-I` implies `-E` and `-s`, ignores `PYTHON*` and the user site, and does not put the working directory or script directory on `sys.path`.
+3. *The helper.* It runs `check_inherited_environment()`, which can only see what already happened.
+4. *Children (build, scanner).* Their environment is built from fixed values, so nothing inherited reaches them.
+
+**Confirmed protections (reproduced).**
+
+| Setting | Expected | Actual | Evidence |
+|---|---|---|---|
+| `PYTHONPATH` with a `sitecustomize` and `usercustomize` | plain Python runs them, `-I` does not | plain: ran; `-I`: did not run | Python job summary |
+| module in the working directory | plain `python3 -c` imports it, `-I` does not | plain: ran; `-I`: did not run | same |
+| `PYTHONHOME=<nonexistent>` | stops plain Python, ignored by `-I` | plain exit 1; `-I` exit 0 | same |
+| `PYTHONHASHSEED=0`, `PYTHONDONTWRITEBYTECODE`, `PYTHONWARNINGS=error`, `PYTHONUTF8=1` | change flags in plain Python, no effect under `-I` | plain: 0 / true / `["error"]` / 1; `-I`: 1 / false / `[]` / 0 | same |
+| `LD_PRELOAD`, `LD_LIBRARY_PATH`, `GCONV_PATH` given to the Action | step fails, status `error`, no scan | `failure` / `error`, `scanner-source` `unknown`, `revision-check` `not-checked` | loader job |
+| `GLIBC_TUNABLES` (five sets: allocator, heap check and tagging, `rtld`, CPU and threading, malformed) | real result unchanged or a failed step | all five: step success, `findings`, 1 finding (the control gave the same). A malformed value only prints an `ld.so` warning in the log | tunables job |
+| locale, `LOCPATH`, `NLSPATH`, `TZ`, `TZDIR`, `MALLOC_*`, `TMPDIR`, `HOME`, `HOSTALIASES`, `RES_OPTIONS`, TLS and `XDG_*` settings, plus `PYTHONPATH`/`PYTHONHOME` | real result unchanged | success, `findings`, 1, `matches-merge`; 2 settings reported as ignored | other-settings job |
+
+Unit tests that pin the boundary without GitHub: `test_ld_preload_runs_even_inside_python_isolated_mode` (the positive control), `test_loader_variables_are_a_hard_error`, `test_the_environment_is_exactly_the_fixed_values_plus_what_is_asked_for`, `test_loader_variables_do_not_reach_the_build_children`, and the new `StartUpSettings` tests, including `test_selected_start_up_settings_do_not_load_probe_library`.
+
+**Confirmed limitations.**
+
+- **`LD_PRELOAD` acts first.** A marker library named by `LD_PRELOAD` created its marker file in a plain `python3 -I` run, and in the Action's own interpreters: two marker files (at least the preparation and report steps) existed after the Action refused. The refusal is therefore **detection that stops the scan, not prevention** of the start-up effect, and an in-process check cannot claim otherwise. Whoever can set `LD_PRELOAD` already controls the workflow (F-04) and, by an earlier step, the job (F-05).
+- **`GLIBC_TUNABLES` is parsed by the loader.** `ld.so --list-tunables` reports the parsed values. A malformed value only produces an `ld.so` warning on stderr.
+- **Observed scope of the tunables evidence.** The 41 tunables listed by glibc 2.39 on this image are allocator, CPU, threading, elision, `rtld` limits, `gmon` and tagging parameters. A name scan found none that is an obvious direct selector of a path, library, audit module or preload, and the trial fails if a later image lists one. The name scan is a heuristic, not an audit of glibc tunables. In the runs, the five chosen sets did not invoke the marker library or change the finding count. That covers those five value sets on this image, nothing more: other values, malformed inputs beyond the one tried, parser defects, other glibc versions and other vulnerability classes are outside the evidence. (As history only, CVE-2023-4911 was a flaw in how an older glibc loader parsed `GLIBC_TUNABLES`; nothing here shows this package is affected, and nothing here shows it is not.)
+
+**Unverified hypotheses (not tested).**
+
+- Whether `GCONV_PATH` would load a gconv module during Python start-up. The Action refuses it regardless, so this was not needed; it is not claimed either way.
+- Other `GLIBC_TUNABLES` values, malformed inputs beyond the one tried, and loader parsing defects.
+- Behaviour on glibc versions other than 2.39 or runner images other than `ubuntu-24.04`. The Action refuses other images.
+- Parsing of a corrupt locale file named by `LOCPATH`, and kernel-level settings (`ptrace`, `seccomp`, `ulimit`). A same-user actor can do more directly (F-05).
+- Settings read by tools the helper does not start, or by future Python or glibc versions.
+
+**Accepted risks.**
+
+- `GLIBC_TUNABLES` and the non-loader settings above are not refused, on the strength of the observations above and not of a proof of safety. A refusal would reject legitimate configurations and prevent nothing, because the loader has already read them before any check.
+- Anyone who can set the environment for the Action's steps can also edit or remove the step (F-04) or run code in the job (F-05). Environment control is not a separate privilege.
+- `MLA_SCAN_TIMEOUT` can be inherited (F-05) and can only make a scan fail.
+
+**What could be mitigated in the present Action.** Nothing that is not already done: children already get a fixed environment, `PYTHON*` is already neutralized by `-I`, and loader variables are already refused. No `action.yml` or helper change was made; D-1, D-2, F-08 and F-05 behaviour is unchanged, and the F-05 limits still apply. A stronger guarantee would need the check to run where the pull request cannot set the environment (a separate trusted workflow), which is outside this audit.
+
+- **Disposition:** characterized; no defect found that an in-Action change can fix. Documentation and tests only. Awaiting independent review; not released.
 
 ### F-08. Build timeout left descendants running
 
@@ -341,7 +390,7 @@ A release candidate tag must not be created until all of these are closed:
 1. **Independent human review is recorded** (see [Sign-off](#sign-off)). Currently pending.
 2. **D-1 has independent review.** It is decided, implemented and verified as a pinned Action (see the evidence table), but has had no independent review. A README-only external fork run against the corrected SHA has now passed; it does not cover a contributor modifying the calling workflow.
 3. **A consumer-trial run exists for the exact commit to be tagged,** unless the tag is placed on `afc7e65…` itself (see [RELEASE_PLAN.md](RELEASE_PLAN.md) for why that is not recommended).
-4. **F-05 and F-07 are confirmed or dismissed** by the reviewer (F-08 was confirmed, fixed, merged, and verified in source and consumer SHA-pinned trials; independent review remains pending).
+4. **F-05 and F-07 are independently reviewed** (both were characterized and documented without a production change; F-08 was confirmed, fixed, merged, and verified in source and consumer SHA-pinned trials; independent review remains pending).
 5. **The reviewer's checklist items below are answered** and any resulting defect is fixed through the private vulnerability process if it is exploitable.
 
 Not blockers, but should be tracked: further D-2 verification if the implementation changes, D-3, D-4, `cargo audit` in CI, and a test of a pull request that edits the workflow.

@@ -334,5 +334,62 @@ class RealBuildIsolation(unittest.TestCase):
         self.assertFalse(env_dump.exists())
 
 
+# Settings that reach the Action's interpreter before or while it starts, other than the
+# loader variables the Action refuses. F-07: they are read and accepted, and they do not
+# load code. These tests pin that finding; they do not make the Action stricter.
+START_UP_SETTINGS = {
+    "GLIBC_TUNABLES": "glibc.malloc.check=3:glibc.malloc.perturb=165:glibc.rtld.nns=1",
+    "MALLOC_CHECK_": "3", "MALLOC_PERTURB_": "85", "MALLOC_ARENA_MAX": "1",
+    "LOCPATH": "/nonexistent-f07", "NLSPATH": "/nonexistent-f07/%N", "LC_ALL": "zz_ZZ.bogus",
+    "LANG": "zz_ZZ.bogus", "TZ": "Bogus/Zone", "TZDIR": "/nonexistent-f07",
+    "HOSTALIASES": "/nonexistent-f07", "RES_OPTIONS": "debug", "TMPDIR": "/nonexistent-f07",
+    "OPENSSL_CONF": "/nonexistent-f07", "SSL_CERT_FILE": "/nonexistent-f07",
+}
+
+
+class StartUpSettings(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = pathlib.Path(self._tmp.name).resolve()
+
+    def test_isolated_mode_ignores_python_settings_that_plain_python_honors(self):
+        (self.root / "sitecustomize.py").write_text(
+            "open(%r, 'w').close()\n" % str(self.root / "ran"))
+        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(self.root)}
+        subprocess.run(["/usr/bin/python3", "-c", "pass"], env=env, capture_output=True, check=True)
+        self.assertTrue((self.root / "ran").exists(), "the control must be sensitive")
+        (self.root / "ran").unlink()
+        env["PYTHONHOME"] = str(self.root / "no-such-home")
+        subprocess.run(["/usr/bin/python3", "-I", "-c", "pass"], env=env, capture_output=True, check=True)
+        self.assertFalse((self.root / "ran").exists())
+
+    @unittest.skipUnless(HAVE_CC, "needs a C compiler")
+    def test_selected_start_up_settings_do_not_load_probe_library(self):
+        (self.root / "pre.c").write_text(
+            '#include <stdio.h>\n__attribute__((constructor)) static void i(void){FILE*f=fopen("%s/loaded","w");if(f)fclose(f);}\n'
+            % self.root)
+        subprocess.run(["cc", "-shared", "-fPIC", "-o", str(self.root / "pre.so"), str(self.root / "pre.c")], check=True)
+        # Positive control: the marker library loads through LD_PRELOAD, which the Action refuses.
+        subprocess.run(["/usr/bin/python3", "-I", "-c", "pass"], env={"LD_PRELOAD": str(self.root / "pre.so")},
+                       capture_output=True, check=True)
+        self.assertTrue((self.root / "loaded").exists())
+        (self.root / "loaded").unlink()
+        # The selected settings below did not load the probe library in this one run (not a proof about all values or versions).
+        env = dict(START_UP_SETTINGS, PATH="/usr/bin:/bin", LIBRARY_PATH=str(self.root))
+        done = subprocess.run(["/usr/bin/python3", "-I", "-c", "import pwd, os; pwd.getpwuid(os.getuid())"],
+                              env=env, capture_output=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse((self.root / "loaded").exists())
+
+    def test_the_helper_accepts_these_settings_and_never_passes_them_on(self):
+        mla.check_inherited_environment(dict(START_UP_SETTINGS))
+        child = mla.trusted_environment({"EXTRA": "1"}, home="/home/runner")
+        for name in START_UP_SETTINGS:
+            if name != "LANG":
+                self.assertNotIn(name, child, name)
+        self.assertEqual(child["LANG"], "C.UTF-8")
+
+
 if __name__ == "__main__":
     unittest.main()
