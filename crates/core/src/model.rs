@@ -781,7 +781,7 @@ mod tests {
         let report = assemble_capped(tight, vec![], gaps(5));
         assert_eq!(omission(&report).len(), 1);
         assert!(native(&report) < 5);
-        assert!(report.incomplete.iter().map(listed_size).sum::<usize>() <= cost * 5 - 1);
+        assert!(report.incomplete.iter().map(listed_size).sum::<usize>() < cost * 5);
     }
 
     #[test]
