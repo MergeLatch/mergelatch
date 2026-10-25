@@ -5,7 +5,9 @@ name: Action F-03 trial (bounded scanner report)
 # helper's 5 MiB limit, so the step ended in `error` and hid every finding.
 # The scanner now lists at most 1000 findings (and a bounded number of bytes),
 # says how many were left out in an `incomplete` entry, and the result is
-# `incomplete`.
+# `incomplete`. The report also lists at most 500 incomplete entries; the gaps
+# scenarios check the boundary (499 and 500 invalid files are all listed, 501
+# leaves one slot for a note).
 #
 # The fixtures are workflow files generated as text and scanned as data; nothing
 # in them is run, and no pull request code is executed. The Action is loaded by
@@ -44,10 +46,14 @@ jobs:
           python3 -I - <<'PY'
           import pathlib
           # Generated workflow text, scanned as data and never run: N unpinned third-party steps, each one finding.
-          def make(name, steps, extra=None):
+          def make(name, steps, extra=None, gaps=0):
               wf = pathlib.Path(name) / ".github" / "workflows"
               wf.mkdir(parents=True)
               body = "".join("      - uses: example/tool@v%d\n" % i for i in range(steps))
+              for i in range(gaps):
+                  (wf / ("broken-%04d.yml" % i)).write_text("a: [unclosed\n")
+              if not steps:
+                  return
               (wf / "ci.yml").write_text("on: pull_request\npermissions:\n  contents: read\njobs:\n  b:\n    steps:\n" + body)
               if extra:
                   (wf / "broken.yml").write_text(extra)
@@ -56,42 +62,66 @@ jobs:
           make("scan-over", 1001)
           make("scan-old", 10000)
           make("scan-mixed", 1500, "a: [unclosed\n")
+          make("scan-gaps499", 0, None, 499)
+          make("scan-gaps500", 0, None, 500)
+          make("scan-gaps501", 0, None, 501)
           PY
 
       - name: "below: 100 unpinned steps"
         id: below
         continue-on-error: true
-        uses: MergeLatch/mergelatch@46ebc37a47da0d9b20150a986c3cfb40fa8f3dee
+        uses: MergeLatch/mergelatch@5231aa0bb2f84ea2f0e3a888548e97cee750b4f5
         with:
           scan-directory: scan-below
 
       - name: "exact: 1000 unpinned steps"
         id: exact
         continue-on-error: true
-        uses: MergeLatch/mergelatch@46ebc37a47da0d9b20150a986c3cfb40fa8f3dee
+        uses: MergeLatch/mergelatch@5231aa0bb2f84ea2f0e3a888548e97cee750b4f5
         with:
           scan-directory: scan-exact
 
       - name: "over: 1001 unpinned steps"
         id: over
         continue-on-error: true
-        uses: MergeLatch/mergelatch@46ebc37a47da0d9b20150a986c3cfb40fa8f3dee
+        uses: MergeLatch/mergelatch@5231aa0bb2f84ea2f0e3a888548e97cee750b4f5
         with:
           scan-directory: scan-over
 
       - name: "old: 10000 unpinned steps"
         id: old
         continue-on-error: true
-        uses: MergeLatch/mergelatch@46ebc37a47da0d9b20150a986c3cfb40fa8f3dee
+        uses: MergeLatch/mergelatch@5231aa0bb2f84ea2f0e3a888548e97cee750b4f5
         with:
           scan-directory: scan-old
 
       - name: "mixed: 1500 unpinned steps"
         id: mixed
         continue-on-error: true
-        uses: MergeLatch/mergelatch@46ebc37a47da0d9b20150a986c3cfb40fa8f3dee
+        uses: MergeLatch/mergelatch@5231aa0bb2f84ea2f0e3a888548e97cee750b4f5
         with:
           scan-directory: scan-mixed
+
+      - name: "gaps499: 499 invalid workflow files"
+        id: gaps499
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@5231aa0bb2f84ea2f0e3a888548e97cee750b4f5
+        with:
+          scan-directory: scan-gaps499
+
+      - name: "gaps500: 500 invalid workflow files"
+        id: gaps500
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@5231aa0bb2f84ea2f0e3a888548e97cee750b4f5
+        with:
+          scan-directory: scan-gaps500
+
+      - name: "gaps501: 501 invalid workflow files"
+        id: gaps501
+        continue-on-error: true
+        uses: MergeLatch/mergelatch@5231aa0bb2f84ea2f0e3a888548e97cee750b4f5
+        with:
+          scan-directory: scan-gaps501
 
       - name: Check the results
         if: always()
@@ -121,6 +151,21 @@ jobs:
           MIXED_FINDINGS: ${{ steps.mixed.outputs.findings-count }}
           MIXED_INCOMPLETE: ${{ steps.mixed.outputs.incomplete-count }}
           MIXED_EXIT: ${{ steps.mixed.outputs.scanner-exit-code }}
+          GAPS499_OUTCOME: ${{ steps.gaps499.outcome }}
+          GAPS499_STATUS: ${{ steps.gaps499.outputs.status }}
+          GAPS499_FINDINGS: ${{ steps.gaps499.outputs.findings-count }}
+          GAPS499_INCOMPLETE: ${{ steps.gaps499.outputs.incomplete-count }}
+          GAPS499_EXIT: ${{ steps.gaps499.outputs.scanner-exit-code }}
+          GAPS500_OUTCOME: ${{ steps.gaps500.outcome }}
+          GAPS500_STATUS: ${{ steps.gaps500.outputs.status }}
+          GAPS500_FINDINGS: ${{ steps.gaps500.outputs.findings-count }}
+          GAPS500_INCOMPLETE: ${{ steps.gaps500.outputs.incomplete-count }}
+          GAPS500_EXIT: ${{ steps.gaps500.outputs.scanner-exit-code }}
+          GAPS501_OUTCOME: ${{ steps.gaps501.outcome }}
+          GAPS501_STATUS: ${{ steps.gaps501.outputs.status }}
+          GAPS501_FINDINGS: ${{ steps.gaps501.outputs.findings-count }}
+          GAPS501_INCOMPLETE: ${{ steps.gaps501.outputs.incomplete-count }}
+          GAPS501_EXIT: ${{ steps.gaps501.outputs.scanner-exit-code }}
         run: |
           set -uo pipefail
           {
@@ -133,6 +178,9 @@ jobs:
             echo "| over (1001) | ${OVER_OUTCOME} | ${OVER_STATUS} | ${OVER_FINDINGS} | ${OVER_INCOMPLETE} | ${OVER_EXIT} |"
             echo "| old (10000) | ${OLD_OUTCOME} | ${OLD_STATUS} | ${OLD_FINDINGS} | ${OLD_INCOMPLETE} | ${OLD_EXIT} |"
             echo "| mixed (1500) | ${MIXED_OUTCOME} | ${MIXED_STATUS} | ${MIXED_FINDINGS} | ${MIXED_INCOMPLETE} | ${MIXED_EXIT} |"
+            echo "| gaps499 (0) | ${GAPS499_OUTCOME} | ${GAPS499_STATUS} | ${GAPS499_FINDINGS} | ${GAPS499_INCOMPLETE} | ${GAPS499_EXIT} |"
+            echo "| gaps500 (0) | ${GAPS500_OUTCOME} | ${GAPS500_STATUS} | ${GAPS500_FINDINGS} | ${GAPS500_INCOMPLETE} | ${GAPS500_EXIT} |"
+            echo "| gaps501 (0) | ${GAPS501_OUTCOME} | ${GAPS501_STATUS} | ${GAPS501_FINDINGS} | ${GAPS501_INCOMPLETE} | ${GAPS501_EXIT} |"
           } | tee -a "${GITHUB_STEP_SUMMARY}"
           fail() { echo "::error title=F-03 trial::$1"; exit 1; }
           expect() { # name got wanted
@@ -143,6 +191,9 @@ jobs:
           expect over "${OVER_OUTCOME}/${OVER_STATUS}/${OVER_FINDINGS}/${OVER_INCOMPLETE}/${OVER_EXIT}" success/incomplete/1000/1/2
           expect old "${OLD_OUTCOME}/${OLD_STATUS}/${OLD_FINDINGS}/${OLD_INCOMPLETE}/${OLD_EXIT}" success/incomplete/1000/1/2
           expect mixed "${MIXED_OUTCOME}/${MIXED_STATUS}/${MIXED_FINDINGS}/${MIXED_INCOMPLETE}/${MIXED_EXIT}" success/incomplete/1000/2/2
+          expect gaps499 "${GAPS499_OUTCOME}/${GAPS499_STATUS}/${GAPS499_FINDINGS}/${GAPS499_INCOMPLETE}/${GAPS499_EXIT}" success/incomplete/0/499/2
+          expect gaps500 "${GAPS500_OUTCOME}/${GAPS500_STATUS}/${GAPS500_FINDINGS}/${GAPS500_INCOMPLETE}/${GAPS500_EXIT}" success/incomplete/0/500/2
+          expect gaps501 "${GAPS501_OUTCOME}/${GAPS501_STATUS}/${GAPS501_FINDINGS}/${GAPS501_INCOMPLETE}/${GAPS501_EXIT}" success/incomplete/0/500/2
           echo "F-03 bounded-report behaviour reproduced"
 
   before-the-fix:
@@ -163,10 +214,14 @@ jobs:
           python3 -I - <<'PY'
           import pathlib
           # Generated workflow text, scanned as data and never run: N unpinned third-party steps, each one finding.
-          def make(name, steps, extra=None):
+          def make(name, steps, extra=None, gaps=0):
               wf = pathlib.Path(name) / ".github" / "workflows"
               wf.mkdir(parents=True)
               body = "".join("      - uses: example/tool@v%d\n" % i for i in range(steps))
+              for i in range(gaps):
+                  (wf / ("broken-%04d.yml" % i)).write_text("a: [unclosed\n")
+              if not steps:
+                  return
               (wf / "ci.yml").write_text("on: pull_request\npermissions:\n  contents: read\njobs:\n  b:\n    steps:\n" + body)
               if extra:
                   (wf / "broken.yml").write_text(extra)
