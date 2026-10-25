@@ -143,21 +143,56 @@ class RealScanner(unittest.TestCase):
         self.assertEqual((code, out["status"], out["revision-check"], out["scanned-revision"]),
                          (0, "clean", "matches-merge", SHA_MERGE))
 
-    def test_a_report_larger_than_the_limit_fails_closed(self):
-        # The scanner does not cap the number of findings, so one workflow of a
-        # few hundred kilobytes can produce a report over the Action's limit.
-        # That must surface as an error, never as findings or as clean.
-        wf = self.ws.workspace / "big" / ".github" / "workflows"
-        wf.mkdir(parents=True)
-        steps = "".join("      - uses: actions/checkout@v%d\n" % i for i in range(7000))
-        (wf / "ci.yml").write_text("on: pull_request\npermissions:\n  contents: read\njobs:\n"
-                                   "  b:\n    runs-on: x\n    steps:\n" + steps)
+    def unpinned_workflow(self, name, steps, file="ci.yml"):
+        wf = self.ws.workspace / name / ".github" / "workflows"
+        wf.mkdir(parents=True, exist_ok=True)
+        body = "".join("      - uses: actions/checkout@v%d\n" % i for i in range(steps))
+        (wf / file).write_text("on: pull_request\npermissions:\n  contents: read\njobs:\n"
+                               "  b:\n    runs-on: x\n    steps:\n" + body)
+
+    def test_ten_thousand_findings_give_a_bounded_incomplete_report(self):
+        # F-03. This is the reproduction that used to produce a 9.5 MB report and
+        # an `error`: one 370 KB workflow with 10,000 unpinned steps. The scanner
+        # now lists the first 1,000 and says that the rest were left out.
+        self.unpinned_workflow("big", 10000)
         code, out, summary = self.run_steps("big")
-        self.assertEqual((code, out["status"]), (1, "error"))
-        self.assertEqual((out["findings-count"], out["incomplete-count"]), ("0", "0"))
-        self.assertEqual(out["revision-check"], "not-checked")
-        self.assertIn("the scanner output is too large", summary)
-        self.assertIn("The job failed on purpose", summary)
+        self.assertEqual((code, out["status"]), (0, "incomplete"))
+        self.assertEqual((out["findings-count"], out["incomplete-count"]), ("1000", "1"))
+        self.assertEqual(out["scanner-exit-code"], "2")
+        self.assertIn("9000 more were left out", summary)
+        self.assertNotIn("too large", summary)
+        self.assertIn("Incomplete: this is not a pass", summary)
+
+    def test_the_findings_limit_is_exact(self):
+        self.unpinned_workflow("at", 1000)
+        code, out, summary = self.run_steps("at")
+        self.assertEqual((code, out["status"], out["findings-count"], out["incomplete-count"]),
+                         (0, "findings", "1000", "0"))
+        self.assertNotIn("left out", summary)
+        self.unpinned_workflow("over", 1001)
+        code, out, summary = self.run_steps("over")
+        self.assertEqual((out["status"], out["findings-count"], out["incomplete-count"]),
+                         ("incomplete", "1000", "1"))
+        self.assertIn("1 more were left out", summary)
+
+    def test_a_truncated_report_still_lists_the_other_incomplete_inspections(self):
+        self.unpinned_workflow("mix", 1500)
+        (self.ws.workspace / "mix" / ".github" / "workflows" / "broken.yml").write_text("a: [unclosed\n")
+        code, out, summary = self.run_steps("mix")
+        self.assertEqual((out["status"], out["findings-count"], out["incomplete-count"]),
+                         ("incomplete", "1000", "2"))
+        self.assertIn("500 more were left out", summary)
+        self.assertIn("broken\\.yml", summary)
+
+    def test_the_report_of_a_large_scan_is_the_same_every_time(self):
+        import subprocess
+        self.unpinned_workflow("det", 3000)
+        self.unpinned_workflow("det", 3000, file="other.yml")
+        runs = [subprocess.run([BINARY, "scan", str(self.ws.workspace / "det"), "--format", "json"],
+                               capture_output=True, check=False) for _ in range(2)]
+        self.assertEqual([r.returncode for r in runs], [2, 2])
+        self.assertEqual(runs[0].stdout, runs[1].stdout)
+        self.assertLess(len(runs[0].stdout), 5 * 1024 * 1024)
 
     # --- Revision verification on a pull_request: unverified means error, never clean. ---
 
