@@ -277,6 +277,12 @@ impl Report {
         mut findings: Vec<Finding>,
         mut incomplete: Vec<Incomplete>,
     ) -> Self {
+        // Distinct findings are told apart on their full text. Only afterwards
+        // is long text cut, and any findings that the cut makes identical are
+        // counted so the report can say so instead of dropping them silently.
+        findings.sort();
+        findings.dedup();
+        let distinct = findings.len();
         for f in &mut findings {
             for text in [
                 &mut f.title,
@@ -290,6 +296,7 @@ impl Report {
         }
         findings.sort();
         findings.dedup();
+        let merged = distinct - findings.len();
         incomplete.sort();
         incomplete.dedup();
 
@@ -341,6 +348,16 @@ impl Report {
             });
         }
 
+        if merged > 0 {
+            notes.push(Incomplete {
+                path: None,
+                kind: IncompleteKind::LimitExceeded,
+                detail: format!(
+                    "{merged} findings that differed only after the first {} characters of a text field are listed once",
+                    caps.max_field_chars
+                ),
+            });
+        }
         incomplete.extend(notes);
         incomplete.sort();
         incomplete.dedup();
@@ -661,12 +678,37 @@ mod tests {
     }
 
     #[test]
-    fn findings_that_differ_only_past_the_field_limit_become_one() {
+    fn findings_that_differ_only_past_the_field_limit_are_not_lost_silently() {
         let mut a = finding("a.yml", 1);
         let mut b = finding("a.yml", 1);
         a.evidence = format!("{}x", "e".repeat(5000));
         b.evidence = format!("{}y", "e".repeat(5000));
-        let report = assemble_capped(ReportCaps::default(), vec![a, b], vec![]);
+        let report = assemble_capped(ReportCaps::default(), vec![a.clone(), b.clone()], vec![]);
+        // Both were distinct, so the report must not stay a plain `findings`.
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        assert_eq!(report.findings.len(), 1);
+        let notes = omission(&report);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0]
+                .detail
+                .contains("1 findings that differed only after the first 1024 characters"),
+            "{}",
+            notes[0].detail
+        );
+        // Input order does not matter, and genuinely identical findings are still just one.
+        assert_eq!(
+            report,
+            assemble_capped(ReportCaps::default(), vec![b, a.clone(), a], vec![])
+        );
+    }
+
+    #[test]
+    fn identical_long_findings_are_one_finding_without_a_note() {
+        let mut a = finding("a.yml", 1);
+        a.evidence = "e".repeat(5000);
+        let report = assemble_capped(ReportCaps::default(), vec![a.clone(), a], vec![]);
+        assert_eq!(report.status, ScanStatus::Findings);
         assert_eq!(report.findings.len(), 1);
     }
 
