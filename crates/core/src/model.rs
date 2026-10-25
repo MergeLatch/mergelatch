@@ -179,9 +179,6 @@ impl Default for ReportCaps {
     }
 }
 
-/// Entries kept free for the notes that say something was left out.
-const RESERVED_NOTES: usize = 2;
-
 /// Size of one value when it is an element of the pretty-printed report,
 /// rounded up: its own pretty form, four more spaces of indentation on every
 /// line, and the separator.
@@ -300,30 +297,7 @@ impl Report {
         incomplete.sort();
         incomplete.dedup();
 
-        let mut notes = Vec::new();
-
-        let limit = caps.max_incomplete.saturating_sub(RESERVED_NOTES);
-        let fits = incomplete.len() <= limit
-            && incomplete.iter().map(listed_size).sum::<usize>() <= caps.max_incomplete_bytes;
-        if !fits {
-            let kept = choose(
-                &incomplete,
-                0..incomplete.len(),
-                limit,
-                caps.max_incomplete_bytes,
-            );
-            let left_out = incomplete.len() - kept.len();
-            incomplete = keep(incomplete, &kept);
-            notes.push(Incomplete {
-                path: None,
-                kind: IncompleteKind::LimitExceeded,
-                detail: format!(
-                    "the report lists {} incomplete inspections; {left_out} more were left out to keep it a bounded size",
-                    kept.len()
-                ),
-            });
-        }
-
+        let mut finding_notes = Vec::new();
         let fits = findings.len() <= caps.max_findings
             && findings.iter().map(listed_size).sum::<usize>() <= caps.max_finding_bytes;
         if !fits {
@@ -338,26 +312,51 @@ impl Report {
             );
             let left_out = findings.len() - kept.len();
             findings = keep(findings, &kept);
-            notes.push(Incomplete {
+            finding_notes.push(format!(
+                "the report lists {} findings, the highest severity first; {left_out} more were left out to keep it a bounded size",
+                kept.len()
+            ));
+        }
+        if merged > 0 {
+            finding_notes.push(format!(
+                "{merged} findings that differed only after the first {} characters of a text field are listed once",
+                caps.max_field_chars
+            ));
+        }
+        let finding_note = (!finding_notes.is_empty()).then(|| Incomplete {
+            path: None,
+            kind: IncompleteKind::LimitExceeded,
+            detail: finding_notes.join("; "),
+        });
+
+        // Room is kept for a note only when that note is actually written.
+        let reserved_count = usize::from(finding_note.is_some());
+        let reserved_bytes = finding_note.as_ref().map_or(0, listed_size);
+        let fits = incomplete.len() + reserved_count <= caps.max_incomplete
+            && incomplete.iter().map(listed_size).sum::<usize>() + reserved_bytes
+                <= caps.max_incomplete_bytes;
+        let mut notes: Vec<Incomplete> = finding_note.into_iter().collect();
+        if !fits {
+            let note = |kept: usize, left_out: usize| Incomplete {
                 path: None,
                 kind: IncompleteKind::LimitExceeded,
                 detail: format!(
-                    "the report lists {} findings, the highest severity first; {left_out} more were left out to keep it a bounded size",
-                    kept.len()
+                    "the report lists {kept} incomplete inspections; {left_out} more were left out to keep it a bounded size"
                 ),
-            });
+            };
+            let room = listed_size(&note(usize::MAX, usize::MAX));
+            let kept = choose(
+                &incomplete,
+                0..incomplete.len(),
+                caps.max_incomplete.saturating_sub(reserved_count + 1),
+                caps.max_incomplete_bytes
+                    .saturating_sub(reserved_bytes + room),
+            );
+            let left_out = incomplete.len() - kept.len();
+            notes.push(note(kept.len(), left_out));
+            incomplete = keep(incomplete, &kept);
         }
 
-        if merged > 0 {
-            notes.push(Incomplete {
-                path: None,
-                kind: IncompleteKind::LimitExceeded,
-                detail: format!(
-                    "{merged} findings that differed only after the first {} characters of a text field are listed once",
-                    caps.max_field_chars
-                ),
-            });
-        }
         incomplete.extend(notes);
         incomplete.sort();
         incomplete.dedup();
@@ -712,6 +711,79 @@ mod tests {
         assert_eq!(report.findings.len(), 1);
     }
 
+    fn gaps(n: usize) -> Vec<Incomplete> {
+        (0..n)
+            .map(|i| Incomplete {
+                path: Some(format!("w{i:04}.yml")),
+                kind: IncompleteKind::InvalidYaml,
+                detail: "d".into(),
+            })
+            .collect()
+    }
+
+    fn native(report: &Report) -> usize {
+        report.incomplete.len() - omission(report).len()
+    }
+
+    #[test]
+    fn up_to_the_incomplete_limit_every_entry_is_kept_without_a_note() {
+        for n in [498, 499, 500] {
+            let report = assemble_capped(ReportCaps::default(), vec![], gaps(n));
+            assert_eq!(report.status, ScanStatus::Incomplete, "{n}");
+            assert_eq!(report.incomplete.len(), n, "{n}");
+            assert!(omission(&report).is_empty(), "{n}");
+            assert_eq!(report.summary.incomplete, n, "{n}");
+        }
+    }
+
+    #[test]
+    fn the_first_incomplete_overflow_keeps_room_for_one_note() {
+        let report = assemble_capped(ReportCaps::default(), vec![], gaps(501));
+        assert_eq!(report.incomplete.len(), 500);
+        assert_eq!(native(&report), 499);
+        assert!(
+            omission(&report)[0]
+                .detail
+                .contains("lists 499 incomplete inspections; 2 more")
+        );
+    }
+
+    #[test]
+    fn with_findings_left_out_one_slot_goes_to_that_note_and_no_more() {
+        // 11 findings with a limit of 10: one findings note is needed.
+        let capped = ReportCaps {
+            max_findings: 10,
+            ..ReportCaps::default()
+        };
+        for (n, native_kept, notes) in [(498, 498, 1), (499, 499, 1), (500, 498, 2)] {
+            let report = assemble_capped(capped, many(11), gaps(n));
+            assert_eq!(native(&report), native_kept, "{n}");
+            assert_eq!(omission(&report).len(), notes, "{n}");
+            assert!(report.incomplete.len() <= 500, "{n}");
+            assert_eq!(report.summary.incomplete, report.incomplete.len(), "{n}");
+            assert_eq!(report.findings.len(), 10, "{n}");
+        }
+    }
+
+    #[test]
+    fn the_incomplete_byte_bound_is_exact() {
+        let cost = listed_size(&gaps(1)[0]);
+        let fitting = ReportCaps {
+            max_incomplete_bytes: cost * 5,
+            ..ReportCaps::default()
+        };
+        let report = assemble_capped(fitting, vec![], gaps(5));
+        assert_eq!((native(&report), omission(&report).len()), (5, 0));
+        let tight = ReportCaps {
+            max_incomplete_bytes: cost * 5 - 1,
+            ..ReportCaps::default()
+        };
+        let report = assemble_capped(tight, vec![], gaps(5));
+        assert_eq!(omission(&report).len(), 1);
+        assert!(native(&report) < 5);
+        assert!(report.incomplete.iter().map(listed_size).sum::<usize>() <= cost * 5 - 1);
+    }
+
     #[test]
     fn a_flood_of_incomplete_entries_is_bounded_and_still_incomplete() {
         let gaps: Vec<_> = (0..2000)
@@ -723,11 +795,11 @@ mod tests {
             .collect();
         let report = assemble_capped(ReportCaps::default(), vec![], gaps);
         assert_eq!(report.status, ScanStatus::Incomplete);
-        // 498 kept entries plus the note, inside the 500 allowed.
-        assert_eq!(report.incomplete.len(), 499);
-        assert_eq!(report.summary.incomplete, 499);
+        // 499 kept entries plus the note, inside the 500 allowed.
+        assert_eq!(report.incomplete.len(), 500);
+        assert_eq!(report.summary.incomplete, 500);
         assert_eq!(omission(&report).len(), 1);
-        assert!(omission(&report)[0].detail.contains("1502 more"));
+        assert!(omission(&report)[0].detail.contains("1501 more"));
     }
 
     #[test]
