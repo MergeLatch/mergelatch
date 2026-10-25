@@ -365,7 +365,7 @@ class StartUpSettings(unittest.TestCase):
         self.assertFalse((self.root / "ran").exists())
 
     @unittest.skipUnless(HAVE_CC, "needs a C compiler")
-    def test_start_up_settings_other_than_loader_variables_load_no_code(self):
+    def test_selected_start_up_settings_do_not_load_probe_library(self):
         (self.root / "pre.c").write_text(
             '#include <stdio.h>\n__attribute__((constructor)) static void i(void){FILE*f=fopen("%s/loaded","w");if(f)fclose(f);}\n'
             % self.root)
@@ -375,7 +375,7 @@ class StartUpSettings(unittest.TestCase):
                        capture_output=True, check=True)
         self.assertTrue((self.root / "loaded").exists())
         (self.root / "loaded").unlink()
-        # None of the other settings loads code, even with the library directory in reach.
+        # The selected settings below did not load the probe library in this one run (not a proof about all values or versions).
         env = dict(START_UP_SETTINGS, PATH="/usr/bin:/bin", LIBRARY_PATH=str(self.root))
         done = subprocess.run(["/usr/bin/python3", "-I", "-c", "import pwd, os; pwd.getpwuid(os.getuid())"],
                               env=env, capture_output=True)
