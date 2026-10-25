@@ -148,13 +148,128 @@ impl From<&ScanLimits> for LimitsInfo {
     }
 }
 
+/// Bounds that keep a report small enough for its consumers.
+///
+/// The Action refuses a report over 5 MiB, so the scanner must not emit one.
+/// The bounds are fixed and are not recorded in the report's `limits` object,
+/// so that the report of a scan below them is exactly what it was before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReportCaps {
+    /// Findings listed in one report.
+    pub max_findings: usize,
+    /// Serialized size of the listed findings, measured as pretty-printed JSON.
+    pub max_finding_bytes: usize,
+    /// Incomplete entries listed in one report.
+    pub max_incomplete: usize,
+    /// Serialized size of the listed incomplete entries.
+    pub max_incomplete_bytes: usize,
+    /// Characters kept in one free-text finding field.
+    pub max_field_chars: usize,
+}
+
+impl Default for ReportCaps {
+    fn default() -> Self {
+        Self {
+            max_findings: 1000,
+            max_finding_bytes: 2 * 1024 * 1024,
+            max_incomplete: 500,
+            max_incomplete_bytes: 512 * 1024,
+            max_field_chars: 1024,
+        }
+    }
+}
+
+/// Entries kept free for the notes that say something was left out.
+const RESERVED_NOTES: usize = 2;
+
+/// Size of one value when it is an element of the pretty-printed report,
+/// rounded up: its own pretty form, four more spaces of indentation on every
+/// line, and the separator.
+fn listed_size<T: Serialize>(value: &T) -> usize {
+    let text = serde_json::to_string_pretty(value).expect("report serialization cannot fail");
+    text.len() + 4 * (text.matches('\n').count() + 1) + 2
+}
+
+fn shorten(text: &mut String, max_chars: usize) {
+    if let Some((cut, _)) = text.char_indices().nth(max_chars) {
+        text.truncate(cut);
+        text.push_str("...");
+    }
+}
+
+/// Indexes of the entries to keep, in their original order.
+///
+/// Entries are taken in `order` until the next one would pass either bound.
+fn choose<T: Serialize>(
+    items: &[T],
+    order: impl Iterator<Item = usize>,
+    max_count: usize,
+    max_bytes: usize,
+) -> Vec<usize> {
+    let mut kept = Vec::new();
+    let mut bytes = 0usize;
+    for index in order {
+        let cost = listed_size(&items[index]);
+        if kept.len() >= max_count || bytes.saturating_add(cost) > max_bytes {
+            break;
+        }
+        bytes += cost;
+        kept.push(index);
+    }
+    kept.sort_unstable();
+    kept
+}
+
+fn keep<T>(items: Vec<T>, indexes: &[usize]) -> Vec<T> {
+    let mut wanted = indexes.iter().copied().peekable();
+    items
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            if wanted.peek() == Some(i) {
+                wanted.next();
+                true
+            } else {
+                false
+            }
+        })
+        .map(|(_, item)| item)
+        .collect()
+}
+
 impl Report {
     /// Builds a report, ordering findings and incomplete entries so the output
     /// does not depend on discovery order, and deriving the status.
     ///
     /// Any incomplete inspection makes the status `Incomplete`, even when
     /// findings are also present. The findings are still listed.
+    ///
+    /// A report has bounded size (see [`ReportCaps`]). If the findings do not
+    /// fit, the highest-severity ones are kept, in their normal order, and an
+    /// `Incomplete` entry of kind `limit_exceeded` says how many were left
+    /// out. `summary.findings` and `summary.incomplete` always equal the
+    /// lengths of the lists in the report, so they count what is listed.
     pub fn assemble(
+        ruleset: RulesetInfo,
+        limits: &ScanLimits,
+        target: Target,
+        files_inspected: usize,
+        findings: Vec<Finding>,
+        incomplete: Vec<Incomplete>,
+    ) -> Self {
+        Self::assemble_with(
+            ReportCaps::default(),
+            ruleset,
+            limits,
+            target,
+            files_inspected,
+            findings,
+            incomplete,
+        )
+    }
+
+    pub(crate) fn assemble_with(
+        caps: ReportCaps,
         ruleset: RulesetInfo,
         limits: &ScanLimits,
         target: Target,
@@ -162,8 +277,71 @@ impl Report {
         mut findings: Vec<Finding>,
         mut incomplete: Vec<Incomplete>,
     ) -> Self {
+        for f in &mut findings {
+            for text in [
+                &mut f.title,
+                &mut f.location,
+                &mut f.message,
+                &mut f.evidence,
+                &mut f.remediation,
+            ] {
+                shorten(text, caps.max_field_chars);
+            }
+        }
         findings.sort();
         findings.dedup();
+        incomplete.sort();
+        incomplete.dedup();
+
+        let mut notes = Vec::new();
+
+        let limit = caps.max_incomplete.saturating_sub(RESERVED_NOTES);
+        let fits = incomplete.len() <= limit
+            && incomplete.iter().map(listed_size).sum::<usize>() <= caps.max_incomplete_bytes;
+        if !fits {
+            let kept = choose(
+                &incomplete,
+                0..incomplete.len(),
+                limit,
+                caps.max_incomplete_bytes,
+            );
+            let left_out = incomplete.len() - kept.len();
+            incomplete = keep(incomplete, &kept);
+            notes.push(Incomplete {
+                path: None,
+                kind: IncompleteKind::LimitExceeded,
+                detail: format!(
+                    "the report lists {} incomplete inspections; {left_out} more were left out to keep it a bounded size",
+                    kept.len()
+                ),
+            });
+        }
+
+        let fits = findings.len() <= caps.max_findings
+            && findings.iter().map(listed_size).sum::<usize>() <= caps.max_finding_bytes;
+        if !fits {
+            let mut order: Vec<usize> = (0..findings.len()).collect();
+            // Highest severity first; ties keep the report order.
+            order.sort_by_key(|&i| (std::cmp::Reverse(findings[i].severity), i));
+            let kept = choose(
+                &findings,
+                order.into_iter(),
+                caps.max_findings,
+                caps.max_finding_bytes,
+            );
+            let left_out = findings.len() - kept.len();
+            findings = keep(findings, &kept);
+            notes.push(Incomplete {
+                path: None,
+                kind: IncompleteKind::LimitExceeded,
+                detail: format!(
+                    "the report lists {} findings, the highest severity first; {left_out} more were left out to keep it a bounded size",
+                    kept.len()
+                ),
+            });
+        }
+
+        incomplete.extend(notes);
         incomplete.sort();
         incomplete.dedup();
         let status = if !incomplete.is_empty() {
@@ -308,6 +486,277 @@ mod tests {
         assert_eq!(value["status"], "incomplete");
         assert_eq!(value["schema_version"], SCHEMA_VERSION);
         assert_eq!(value["incomplete"][0]["kind"], "invalid_yaml");
+    }
+
+    fn sev_finding(severity: Severity, file: &str, line: usize) -> Finding {
+        Finding {
+            severity,
+            ..finding(file, line)
+        }
+    }
+
+    fn caps(max_findings: usize) -> ReportCaps {
+        ReportCaps {
+            max_findings,
+            ..ReportCaps::default()
+        }
+    }
+
+    fn assemble_capped(caps: ReportCaps, findings: Vec<Finding>, gaps: Vec<Incomplete>) -> Report {
+        Report::assemble_with(
+            caps,
+            ruleset(),
+            &ScanLimits::default(),
+            target(),
+            1,
+            findings,
+            gaps,
+        )
+    }
+
+    fn many(n: usize) -> Vec<Finding> {
+        (1..=n).map(|i| finding("a.yml", i)).collect()
+    }
+
+    fn omission(report: &Report) -> Vec<&Incomplete> {
+        report
+            .incomplete
+            .iter()
+            .filter(|i| i.kind == IncompleteKind::LimitExceeded)
+            .collect()
+    }
+
+    #[test]
+    fn below_the_limit_is_unchanged() {
+        let report = assemble_capped(caps(10), many(9), vec![]);
+        assert_eq!(report.status, ScanStatus::Findings);
+        assert_eq!(report.findings.len(), 9);
+        assert!(report.incomplete.is_empty());
+    }
+
+    #[test]
+    fn exactly_at_the_limit_is_unchanged() {
+        let report = assemble_capped(caps(10), many(10), vec![]);
+        assert_eq!(report.status, ScanStatus::Findings);
+        assert_eq!(report.findings.len(), 10);
+        assert!(report.incomplete.is_empty());
+        assert_eq!(report.summary.findings, 10);
+    }
+
+    #[test]
+    fn one_over_the_limit_is_incomplete_and_says_how_many_were_left_out() {
+        let report = assemble_capped(caps(10), many(11), vec![]);
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        assert_eq!(report.findings.len(), 10);
+        assert_eq!(report.summary.findings, 10);
+        assert_eq!(report.summary.incomplete, 1);
+        let notes = omission(&report);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].path.is_none());
+        assert!(
+            notes[0].detail.contains("lists 10 findings"),
+            "{}",
+            notes[0].detail
+        );
+        assert!(
+            notes[0].detail.contains("1 more were left out"),
+            "{}",
+            notes[0].detail
+        );
+    }
+
+    #[test]
+    fn the_highest_severities_are_kept_and_the_order_is_unchanged() {
+        let mut input = vec![
+            sev_finding(Severity::Low, "a.yml", 1),
+            sev_finding(Severity::High, "a.yml", 2),
+            sev_finding(Severity::Medium, "a.yml", 3),
+            sev_finding(Severity::High, "a.yml", 4),
+            sev_finding(Severity::Low, "a.yml", 5),
+        ];
+        let report = assemble_capped(caps(3), input.clone(), vec![]);
+        // Report order is the normal sort order, not severity order.
+        let kept: Vec<_> = report
+            .findings
+            .iter()
+            .map(|f| (f.severity, f.line))
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                (Severity::Medium, Some(3)),
+                (Severity::High, Some(2)),
+                (Severity::High, Some(4)),
+            ]
+        );
+        input.reverse();
+        assert_eq!(report, assemble_capped(caps(3), input, vec![]));
+    }
+
+    #[test]
+    fn findings_with_other_incomplete_inspections_keep_both() {
+        let report = assemble_capped(caps(2), many(5), vec![incomplete()]);
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        assert_eq!(report.findings.len(), 2);
+        assert_eq!(report.summary.incomplete, 2);
+        assert!(
+            report
+                .incomplete
+                .iter()
+                .any(|i| i.kind == IncompleteKind::InvalidYaml)
+        );
+        assert_eq!(omission(&report).len(), 1);
+    }
+
+    #[test]
+    fn duplicates_do_not_count_against_the_limit() {
+        let mut input = many(10);
+        input.extend(many(10));
+        let report = assemble_capped(caps(10), input, vec![]);
+        assert_eq!(report.status, ScanStatus::Findings);
+        assert_eq!(report.findings.len(), 10);
+    }
+
+    #[test]
+    fn a_size_bound_alone_also_makes_the_report_incomplete() {
+        let cost = listed_size(&finding("a.yml", 1));
+        let report = assemble_capped(
+            ReportCaps {
+                max_finding_bytes: cost * 3 + cost / 2,
+                ..ReportCaps::default()
+            },
+            many(10),
+            vec![],
+        );
+        assert_eq!(report.findings.len(), 3);
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        assert!(omission(&report)[0].detail.contains("7 more were left out"));
+    }
+
+    #[test]
+    fn exactly_at_the_size_bound_is_unchanged() {
+        let cost = listed_size(&finding("a.yml", 1));
+        let report = assemble_capped(
+            ReportCaps {
+                max_finding_bytes: cost * 4,
+                ..ReportCaps::default()
+            },
+            many(4),
+            vec![],
+        );
+        assert_eq!(report.status, ScanStatus::Findings);
+        assert_eq!(report.findings.len(), 4);
+    }
+
+    #[test]
+    fn long_fields_are_shortened_and_do_not_by_themselves_make_it_incomplete() {
+        let mut f = finding("a.yml", 1);
+        f.evidence = "é".repeat(100_000);
+        f.location = "l".repeat(100_000);
+        let report = assemble_capped(ReportCaps::default(), vec![f], vec![]);
+        assert_eq!(report.status, ScanStatus::Findings);
+        assert_eq!(report.findings[0].evidence.chars().count(), 1024 + 3);
+        assert!(report.findings[0].evidence.ends_with("..."));
+        assert!(report.to_json().len() < 16 * 1024);
+    }
+
+    #[test]
+    fn findings_that_differ_only_past_the_field_limit_become_one() {
+        let mut a = finding("a.yml", 1);
+        let mut b = finding("a.yml", 1);
+        a.evidence = format!("{}x", "e".repeat(5000));
+        b.evidence = format!("{}y", "e".repeat(5000));
+        let report = assemble_capped(ReportCaps::default(), vec![a, b], vec![]);
+        assert_eq!(report.findings.len(), 1);
+    }
+
+    #[test]
+    fn a_flood_of_incomplete_entries_is_bounded_and_still_incomplete() {
+        let gaps: Vec<_> = (0..2000)
+            .map(|i| Incomplete {
+                path: Some(format!("w{i:04}.yml")),
+                kind: IncompleteKind::InvalidYaml,
+                detail: "d".into(),
+            })
+            .collect();
+        let report = assemble_capped(ReportCaps::default(), vec![], gaps);
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        // 498 kept entries plus the note, inside the 500 allowed.
+        assert_eq!(report.incomplete.len(), 499);
+        assert_eq!(report.summary.incomplete, 499);
+        assert_eq!(omission(&report).len(), 1);
+        assert!(omission(&report)[0].detail.contains("1502 more"));
+    }
+
+    #[test]
+    fn the_old_ten_thousand_finding_report_is_now_bounded() {
+        let input: Vec<_> = (1..=10_000)
+            .map(|i| Finding {
+                rule_id: "MLA001".into(),
+                severity: Severity::Medium,
+                title: "Action is not pinned to a full commit SHA".into(),
+                file: ".github/workflows/ci.yml".into(),
+                line: Some(i),
+                location: format!("jobs.b.steps[{i}].uses"),
+                message: "m".repeat(200),
+                evidence: "uses: actions/checkout@v1".into(),
+                remediation: "r".repeat(250),
+            })
+            .collect();
+        let report = assemble_capped(ReportCaps::default(), input.clone(), vec![]);
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        assert_eq!(report.findings.len(), 1000);
+        assert!(
+            omission(&report)[0]
+                .detail
+                .contains("9000 more were left out")
+        );
+        assert!(report.to_json().len() < 5 * 1024 * 1024);
+        let again = assemble_capped(ReportCaps::default(), input, vec![]);
+        assert_eq!(report.to_json(), again.to_json());
+    }
+
+    #[test]
+    fn the_worst_case_report_stays_inside_the_five_mebibyte_limit() {
+        // Maximum-size fields of 4-byte characters, a long path, and more
+        // entries than the bounds allow, for findings and for gaps alike.
+        let wide = "\u{1F600}".repeat(5000);
+        let findings: Vec<_> = (1..=3000)
+            .map(|i| Finding {
+                rule_id: "MLA001".into(),
+                severity: Severity::High,
+                title: wide.clone(),
+                file: "f".repeat(4096),
+                line: Some(i),
+                location: wide.clone(),
+                message: wide.clone(),
+                evidence: wide.clone(),
+                remediation: wide.clone(),
+            })
+            .collect();
+        let gaps: Vec<_> = (0..3000)
+            .map(|i| Incomplete {
+                path: Some(format!("{i}{}", "p".repeat(4096))),
+                kind: IncompleteKind::InvalidYaml,
+                detail: "d".repeat(300),
+            })
+            .collect();
+        let report = Report::assemble(
+            ruleset(),
+            &ScanLimits::default(),
+            Target {
+                path: "t".repeat(4096),
+                revision: None,
+            },
+            1000,
+            findings,
+            gaps,
+        );
+        let size = report.to_json().len();
+        assert!(size <= 3 * 1024 * 1024, "{size}");
+        assert_eq!(report.status, ScanStatus::Incomplete);
+        assert_eq!(report.summary.findings, report.findings.len());
+        assert_eq!(report.summary.incomplete, report.incomplete.len());
     }
 
     #[test]
