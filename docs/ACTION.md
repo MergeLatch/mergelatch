@@ -213,7 +213,7 @@ What was observed on GitHub (real execution, not mocks). Summary text was read f
 | Revision | Pull request head checkout: `matches-head`. Base-commit checkout: `mismatch`, step failed. |
 | Hostile input | Inert build files were scanned as data. With hostile `BASH_ENV`, `CARGO_HOME`, linker, compiler-wrapper, and rustup settings in the step environment, the build succeeded, the Action listed them as ignored, and no `HOSTILE_*` marker appeared. A control bash step with `BASH_ENV` did run its marker. |
 
-Measured on that run (one fresh cold runner): total run 34 s, trial job 30 s, no-checkout job 3 s. The scanner build took 20.4 s (about 9 s to install the pinned toolchain and 13.1 s to download and compile the locked crates in release mode); later builds in the same job reuse the target directory. These are single measurements; earlier cold runs took 27.3 s for the same build, so expect variation.
+Measured on that run (one fresh cold runner): total run 34 s, trial job 30 s, no-checkout job 3 s. The scanner build took 20.4 s (about 9 s to install the pinned toolchain and 13.1 s to download and compile the locked crates in release mode); later builds in the same job reuse the target directory. These are single measurements; cold runs across verified jobs ranged from 20.4 s to 26.0 s, so expect variation.
 
 Not verified, and not measured:
 
