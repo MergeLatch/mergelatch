@@ -107,7 +107,7 @@ A green check means only that the job ran. It is never evidence that a pull requ
 
 The Action needs no token permissions of its own. Use `permissions: contents: read` (the minimum for `actions/checkout`) and no secrets. It runs only on the `pull_request` event. It supports GitHub-hosted Ubuntu runners on x86-64 only (`ubuntu-24.04` is the one tested), because the scanner's race-resistant file access is verified only there. The Action enforces this at run time and refuses self-hosted, non-Linux, non-Ubuntu, and ARM runners. It never uses the network for anything except downloading the pinned Rust toolchain and the locked crates.
 
-The build downloads the pinned Rust toolchain and the locked crates, which takes a few minutes on a cold runner and needs network access to `static.rust-lang.org` and `crates.io`.
+The build downloads the pinned Rust toolchain and the locked crates on a cold runner, which takes a few minutes and needs network access to `static.rust-lang.org` and `crates.io`. If the toolchain and dependencies are already completely cached on the runner, compilation can proceed offline.
 
 ## Fork pull requests
 
@@ -236,7 +236,7 @@ This is a review of the Action as it stands, not a release. No tag, release page
 | Runners | GitHub-hosted Ubuntu on x86-64, enforced at run time. `ubuntu-24.04` is the one tested |
 | Installation | Pin `MergeLatch/mergelatch@<full 40-character SHA>`; see the example workflow. Tags and branches are not supported and are reported as "NOT a full commit SHA" |
 | Build integrity | `cargo build --locked` from `Cargo.lock` and a pinned `rust-toolchain.toml`. Bit-for-bit reproducibility was not checked. rustup and cargo verify what they download against their own metadata; MergeLatch adds no separate verification of the toolchain or crates |
-| Network dependencies | GitHub, the Rust distribution server, the crates registry. A runner without access to them cannot build the scanner and the step fails with status `error` |
+| Network dependencies | GitHub, the Rust distribution server, the crates registry. On a cold runner requiring downloads, lack of network access halts the build with status `error`; a runner with completely pre-cached toolchain and Cargo dependencies can compile without external network access |
 | License | Apache-2.0, see `LICENSE`; dependencies keep their own licenses |
 | Reporting vulnerabilities | Through GitHub private vulnerability reporting, see `SECURITY.md` |
 | False positives and negatives | See [RULES.md](RULES.md); the Action adds none of its own beyond the revision check |

@@ -234,8 +234,8 @@ The Action's execution path under network failure and offline conditions was ana
 |---|---|---|---|
 | **Trust Boundaries** | Boundary is the immutable GitHub commit SHA pinned by consumer. Pinned SHA establishes exact Action source tree identity; runner compiles within scrubbed env in isolated session. Build inputs also include pinned toolchain, locked crates, and runner environment. | Same as A, plus target dir randomized per invocation and CI automated audits. | Shifts boundary to GitHub Releases CDN, release signing keys/OIDC, and external binary hosting. |
 | **Dependency & Network Exposure** | Contacts `static.rust-lang.org` and `crates.io` on every cold run. 45 registry crates fetched. | If vendored: no `crates.io` traffic, but substantial git repo bloat. Still requires `rustup` network. | Single download from GitHub Releases. Fails if GitHub Releases is rate-limited or unreachable. |
-| **Build Execution Risks** | 16 distinct crates / 17 package instances (11 build-script crates covering 12 instances, 2 proc-macro entry, 5 proc-macro support crates) run code during build. Bounded by 1,500 s group timeout. | Same as A. Build scripts still execute unless completely rewritten/pruned. | **Zero build scripts execute on runner.** Runner executes opaque precompiled ELF binary. |
-| **Artifact Integrity & Provenance** | Native compile directly from git tree pinned by SHA. Pins source identity, but does not provide an artifact attestation or independently verified reproducible build. | Same as A. | Requires cryptographic signatures and artifact attestations (e.g. SLSA Level 3 via Sigstore). A checksum alone is insufficient. |
+| **Build Execution Risks** | 16 distinct crate names / 17 package instances execute code during build: 11 build-script crates (12 package instances), 2 proc-macro entry crates, and 3 proc-macro support-only crates (with `proc-macro2` and `quote` counted as build scripts and serving dual roles). Bounded by 1,500 s group timeout. | Same as A. Build scripts still execute unless completely rewritten/pruned. | **Zero build scripts or proc-macros execute on runner.** Runner executes opaque precompiled ELF binary. |
+| **Artifact Integrity & Provenance** | Native compile directly from git tree pinned by SHA. Pins source identity, but does not provide an artifact attestation or independently verified reproducible build. | Same as A. | Requires an explicitly selected authenticity, integrity, and provenance strategy (e.g. release signing, Sigstore/OIDC, or SLSA provenance attestations). A checksum alone is insufficient. |
 | **Binary Compatibility** | Compiled for `x86_64-unknown-linux-gnu` on tested `ubuntu-24.04` runner ABI. | Compiled for `x86_64-unknown-linux-gnu` on tested `ubuntu-24.04` runner ABI. | Requires selecting and validating an ABI strategy (e.g. static `musl` or older glibc baseline) across runner versions. |
 | **Build Time & Resource Costs** | Measured cold: 20.4 s - 26.0 s; Warm: 148 ms - 219 ms. Estimated network transfer: ~75 MB (unmeasured estimate). | Estimated cold: ~18 s - 22 s; Warm: ~0.22 s (unmeasured estimates). | Estimated cold: **~1 s - 3 s** (download only); Warm: ~0.20 s. Estimated network transfer: ~12 MB (unmeasured estimates). |
 | **Availability & Complexity** | High availability (Rust CDN). Extremely low operational complexity. | Moderate complexity (maintaining vendored tree or cache poisoning defenses). | High operational complexity: release workflows, asset publishing, rate-limit handling, cross-build CI. |
@@ -254,12 +254,14 @@ A cryptographic digest (e.g. SHA-256) establishes only **data integrity** relati
 - That the publisher or maintainer account releasing the binary was not hijacked.
 - That hidden backdoors or compiler trojans were not injected during release artifact compilation.
 
-#### 2. Reproducible-Build Feasibility
+#### 2. Reproducible-Build Feasibility and Assurance Strategies
 
-For prebuilt binaries to be independently verifiable, builds must be bit-for-bit reproducible across independent machines:
-- **Rustc hurdles:** Non-deterministic debug symbols, build path embeddings, incremental compilation artifacts, and host environment variations affect binary hashes.
-- **Required mitigations:** Compiling with `--remap-path-prefix`, `RUSTFLAGS="-C link-arg=-Wl,--build-id=none"`, fixed timestamps (`SOURCE_DATE_EPOCH`), and static target linking (`x86_64-unknown-linux-musl`).
-- Feasible, but requires substantial ongoing release engineering infrastructure.
+A prebuilt distribution requires an explicitly chosen authenticity, integrity, and provenance strategy. Signed release attestations, SLSA provenance, Sigstore verification, and reproducible builds are possible controls with different operational overheads and assurance benefits; none is an absolute universal requirement for every prebuilt distribution, but each addresses specific risks:
+
+- **Reproducible builds:** To enable independent third parties to verify that a prebuilt binary corresponds strictly to the public source commit, builds must achieve bit-for-bit reproducibility across independent environments.
+  - **Rustc hurdles:** Non-deterministic debug symbols, embedded host build paths, incremental compilation artifacts, and host environment variations affect binary hashes.
+  - **Mitigation strategies:** Compiling with `--remap-path-prefix`, `RUSTFLAGS="-C link-arg=-Wl,--build-id=none"`, fixed timestamps (`SOURCE_DATE_EPOCH`), and static target linking (`x86_64-unknown-linux-musl`).
+  - Feasible, but requires substantial ongoing release engineering infrastructure.
 
 #### 3. Cryptographic Digests and Artifact Attestations
 
@@ -285,7 +287,7 @@ To provide trustworthy prebuilt binaries, MergeLatch would need to evaluate assu
   - Sanitized process environment (`trusted_environment`) purging caller-provided compiler/linker overrides.
   - Locked Cargo dependencies (`--locked`) enforcing cryptographic SHA-256 hashes for all 45 registry crates.
   - Process-group termination preventing orphan build descendants on timeout (F-08).
-  - Fail-closed error handling: build failure, network outage, or binary absence results in status `error` and non-zero exit.
+  - Fail-closed error handling: build failure, required download failure, or binary absence results in status `error` and non-zero exit (an offline runner with fully pre-cached toolchain and Cargo dependencies can succeed locally, but any required download failure halts the build).
   - Workspace-wide `unsafe_code = "forbid"`.
 - **Confirmed vulnerabilities or weaknesses:**
   - **F-05 Same-job interference:** A prior step in the same job running as `runner` with `sudo` can tamper with `$RUNNER_TEMP`, `/tmp`, `~/.cargo/bin`, or state files. This is an architectural limitation of GitHub Actions job composition and affects both source compilation and prebuilt binaries equally.
