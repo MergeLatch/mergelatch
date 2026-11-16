@@ -107,7 +107,7 @@ A green check means only that the job ran. It is never evidence that a pull requ
 
 The Action needs no token permissions of its own. Use `permissions: contents: read` (the minimum for `actions/checkout`) and no secrets. It runs only on the `pull_request` event. It supports GitHub-hosted Ubuntu runners on x86-64 only (`ubuntu-24.04` is the one tested), because the scanner's race-resistant file access is verified only there. The Action enforces this at run time and refuses self-hosted, non-Linux, non-Ubuntu, and ARM runners. It never uses the network for anything except downloading the pinned Rust toolchain and the locked crates.
 
-The build downloads the pinned Rust toolchain and the locked crates, which takes a few minutes on a cold runner and needs network access to `static.rust-lang.org` and `crates.io`.
+The build downloads the pinned Rust toolchain and the locked crates on a cold runner, which takes approximately 20.4 to 26.0 seconds on the tested GitHub-hosted runners and needs network access to `static.rust-lang.org` and `crates.io`. If the toolchain and dependencies are already completely cached on the runner, compilation can proceed offline.
 
 ## Fork pull requests
 
@@ -213,7 +213,7 @@ What was observed on GitHub (real execution, not mocks). Summary text was read f
 | Revision | Pull request head checkout: `matches-head`. Base-commit checkout: `mismatch`, step failed. |
 | Hostile input | Inert build files were scanned as data. With hostile `BASH_ENV`, `CARGO_HOME`, linker, compiler-wrapper, and rustup settings in the step environment, the build succeeded, the Action listed them as ignored, and no `HOSTILE_*` marker appeared. A control bash step with `BASH_ENV` did run its marker. |
 
-Measured on that run (one fresh cold runner): total run 34 s, trial job 30 s, no-checkout job 3 s. The scanner build took 20.4 s (about 9 s to install the pinned toolchain and 13.1 s to download and compile the locked crates in release mode); later builds in the same job reuse the target directory. These are single measurements; earlier cold runs took 27.3 s for the same build, so expect variation.
+Measured on that run (one fresh cold runner): total run 34 s, trial job 30 s, no-checkout job 3 s. The scanner build took 20.4 s (about 9 s to install the pinned toolchain and 13.1 s to download and compile the locked crates in release mode); later builds in the same job reuse the target directory. These are single measurements; cold runs across verified jobs ranged from 20.4 s to 26.0 s, so expect variation.
 
 Not verified, and not measured:
 
@@ -236,7 +236,7 @@ This is a review of the Action as it stands, not a release. No tag, release page
 | Runners | GitHub-hosted Ubuntu on x86-64, enforced at run time. `ubuntu-24.04` is the one tested |
 | Installation | Pin `MergeLatch/mergelatch@<full 40-character SHA>`; see the example workflow. Tags and branches are not supported and are reported as "NOT a full commit SHA" |
 | Build integrity | `cargo build --locked` from `Cargo.lock` and a pinned `rust-toolchain.toml`. Bit-for-bit reproducibility was not checked. rustup and cargo verify what they download against their own metadata; MergeLatch adds no separate verification of the toolchain or crates |
-| Network dependencies | GitHub, the Rust distribution server, the crates registry. A runner without access to them cannot build the scanner and the step fails with status `error` |
+| Network dependencies | GitHub, the Rust distribution server, the crates registry. On a cold runner requiring downloads, lack of network access halts the build with status `error`; a runner with completely pre-cached toolchain and Cargo dependencies can compile without external network access |
 | License | Apache-2.0, see `LICENSE`; dependencies keep their own licenses |
 | Reporting vulnerabilities | Through GitHub private vulnerability reporting, see `SECURITY.md` |
 | False positives and negatives | See [RULES.md](RULES.md); the Action adds none of its own beyond the revision check |
@@ -248,7 +248,7 @@ This is a review of the Action as it stands, not a release. No tag, release page
 Open items before a first controlled public release candidate:
 
 1. Independent human review of the Action, helper, workflows, and build ([REVIEW_READINESS.md](REVIEW_READINESS.md)). Pending.
-2. Independent review of the D-1 `pull_request`-only allowlist (implemented and trial-tested at `2a1a514b94754b146a690cf98ef59bc649d423ff`) and maintainer dispositions for D-2 through D-4 in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions).
+2. Independent review of the D-1 `pull_request`-only allowlist (implemented and trial-tested at `2a1a514b94754b146a690cf98ef59bc649d423ff`) and maintainer dispositions for D-2 through D-4 in [REVIEW_READINESS.md](REVIEW_READINESS.md#audit-findings-and-dispositions) (with D-4 evaluated in [AUDIT_D4_BUILD_SUPPLY_CHAIN.md](AUDIT_D4_BUILD_SUPPLY_CHAIN.md)).
 3. A consumer-trial run pinned to the **exact candidate release commit**, even if its implementation is byte-identical to the tested `2a1a514b94754b146a690cf98ef59bc649d423ff` implementation ([RELEASE_PLAN.md](RELEASE_PLAN.md)).
 
 Verified for the historical `afc7e65…` implementation: the in-repository trial including its rendered full SHA, separate consumer trial, and first-time external fork PR (README-only). Verified separately for `2a1a514b94754b146a690cf98ef59bc649d423ff`: in-repository and separate consumer trials, the manually dispatched unsupported-event rejection, and a first-time README-only external-fork PR ([run 40112702817](https://github.com/MergeLatch/mergelatch-consumer-trial/actions/runs/40112702817)) after maintainer approval. The newer D-2 SHA `95bad26bc731caa913861e95f75bf2c4de3dc6b4` has its own source and consumer pinned trials (below), but no D-2 fork run or independent security review. No test of a contributor editing the caller workflow has been performed.
