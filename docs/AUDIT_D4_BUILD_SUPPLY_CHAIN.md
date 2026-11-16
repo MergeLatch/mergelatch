@@ -198,7 +198,7 @@ The Action's execution path under network failure and offline conditions was ana
 1. `action/build.sh` runs with `set -euo pipefail`. If any required network download (`rustup toolchain install` manifest or `cargo` registry fetch) fails, the script exits immediately with a non-zero exit code.
 2. `action/mergelatch_action.py` `build()` catches the non-zero exit code of `build.sh` and raises `ActionError`, returning exit code 1.
 3. In `action.yml`, the build step specifies `continue-on-error: true`. When `build.sh` fails, GitHub Actions marks `steps.build.outcome = 'failure'` and execution proceeds to the `scan` step.
-4. In `scan()`, `${MLA_STATE_DIR}/binary-path.txt` does not exist because `build.sh` terminated before writing it. `open()` raises `FileNotFoundError`, handled by setting `scan-exit-code.txt` to `127`.
+4. In `scan()`, `${MLA_STATE_DIR}/binary-path.txt` does not exist because `build.sh` terminated before writing it. `open()` raises `FileNotFoundError`, handled by setting `scan-exit-code.txt` to `127` (the helper step itself returns zero so the report step can run).
 5. In `report()`, `MLA_BUILD_OUTCOME` is evaluated:
    ```python
    if build_outcome is not None and build_outcome != "success":
@@ -233,7 +233,7 @@ The Action's execution path under network failure and offline conditions was ana
 | Evaluation Dimension | Approach A: Continue Source Compilation (Current Safeguards) | Approach B: Continue Source Compilation (Additional Safe Protections) | Approach C: Introduce Verified Prebuilt Scanner Binaries |
 |---|---|---|---|
 | **Trust Boundaries** | Boundary is the immutable GitHub commit SHA pinned by consumer. Pinned SHA establishes exact Action source tree identity; runner compiles within scrubbed env in isolated session. Build inputs also include pinned toolchain, locked crates, and runner environment. | Same as A, plus target dir randomized per invocation and CI automated audits. | Shifts boundary to GitHub Releases CDN, release signing keys/OIDC, and external binary hosting. |
-| **Dependency & Network Exposure** | Contacts `static.rust-lang.org` and `crates.io` on every cold run. 45 registry crates fetched. | If vendored: no `crates.io` traffic, but substantial git repo bloat. Still requires `rustup` network. | Single download from GitHub Releases. Fails if GitHub Releases is rate-limited or unreachable. |
+| **Dependency & Network Exposure** | Contacts `static.rust-lang.org` and `crates.io` on every cold run. 45 registry crates fetched. | If vendored: no `crates.io` traffic, but substantial git repo bloat. Rustup requires network access when the pinned toolchain is not already cached. | Single download from GitHub Releases. Fails if GitHub Releases is rate-limited or unreachable. |
 | **Build Execution Risks** | 16 distinct crate names / 17 package instances execute code during build: 11 build-script crates (12 package instances), 2 proc-macro entry crates, and 3 proc-macro support-only crates (with `proc-macro2` and `quote` counted as build scripts and serving dual roles). Bounded by 1,500 s group timeout. | Same as A. Build scripts still execute unless completely rewritten/pruned. | **Zero build scripts or proc-macros execute on runner.** Runner executes opaque precompiled ELF binary. |
 | **Artifact Integrity & Provenance** | Native compile directly from git tree pinned by SHA. Pins source identity, but does not provide an artifact attestation or independently verified reproducible build. | Same as A. | Requires an explicitly selected authenticity, integrity, and provenance strategy (e.g. release signing, Sigstore/OIDC, or SLSA provenance attestations). A checksum alone is insufficient. |
 | **Binary Compatibility** | Compiled for `x86_64-unknown-linux-gnu` on tested `ubuntu-24.04` runner ABI. | Compiled for `x86_64-unknown-linux-gnu` on tested `ubuntu-24.04` runner ABI. | Requires selecting and validating an ABI strategy (e.g. static `musl` or older glibc baseline) across runner versions. |
@@ -293,7 +293,7 @@ To provide trustworthy prebuilt binaries, MergeLatch would need to evaluate assu
   - **F-05 Same-job interference:** A prior step in the same job running as `runner` with `sudo` can tamper with `$RUNNER_TEMP`, `/tmp`, `~/.cargo/bin`, or state files. This is an architectural limitation of GitHub Actions job composition and affects both source compilation and prebuilt binaries equally.
   - **RUSTSEC-2026-0486:** Informational unsoundness advisory in `rustix` 1.1.5 affecting six xattr functions. Transitive call-path search found no callers in locked dependencies, but the advisory remains an unresolved dependency risk pending remediation.
 - **Accepted risks:**
-  - Build-time execution of 16 distinct crates / 17 package instances (11 build-script crates covering 12 instances, 2 proc-macro entry, 5 proc-macro support crates, 2 dual-role crates) from `crates.io` on the runner during cold builds.
+  - Build-time execution of 16 distinct crates / 17 package instances (11 build-script crates covering 12 instances, 2 proc-macro entry crates, and 5 proc-macro support-role memberships, of which `proc-macro2` and `quote` are already counted among the build-script packages, leaving 3 support-only crates: `heck`, `syn`, and `unicode-ident`) from `crates.io` on the runner during cold builds.
   - Dependency on `static.rust-lang.org` and `crates.io` availability during cold builds.
   - Cold build duration of 20.4 to 26.0 seconds on fresh runners.
 - **Improvements suitable for this stage:**
@@ -301,7 +301,7 @@ To provide trustworthy prebuilt binaries, MergeLatch would need to evaluate assu
   - Maintain source build as the approved mechanism.
   - In developer CI, track RustSec advisories and schedule an upgrade of `rustix` to `>= 1.1.6` as a separate follow-up PR with `cap-std` compatibility testing.
 - **Changes that should wait for a trusted enforcement architecture:**
-  - **Prebuilt binary distribution (Approach C):** Prebuilt binaries reduce cold startup time, but do not eliminate the same-job F-05 interference risk. Furthermore, verifying Sigstore attestations within the standard-library Python helper is non-trivial. Prebuilt binaries should be introduced only when MergeLatch establishes an isolated enforcement architecture (such as a separate merge-gate job, GitHub App, or isolated sidecar environment) where a full SLSA L3 verification pipeline can be enforced.
+  - **Prebuilt binary distribution (Approach C):** Prebuilt binaries reduce cold startup time, but do not eliminate the same-job F-05 interference risk. Furthermore, verifying Sigstore attestations within the standard-library Python helper is non-trivial. Prebuilt binaries should be introduced only when MergeLatch establishes an isolated enforcement architecture (such as a separate merge-gate job, GitHub App, or isolated sidecar environment) where a full SLSA Level 3 verification pipeline—a chosen MergeLatch assurance target for its future enforcement architecture, not a universal requirement for all prebuilt binary distributions—can be enforced.
 
 ### Final D-4 Determination
 

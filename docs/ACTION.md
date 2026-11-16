@@ -107,7 +107,7 @@ A green check means only that the job ran. It is never evidence that a pull requ
 
 The Action needs no token permissions of its own. Use `permissions: contents: read` (the minimum for `actions/checkout`) and no secrets. It runs only on the `pull_request` event. It supports GitHub-hosted Ubuntu runners on x86-64 only (`ubuntu-24.04` is the one tested), because the scanner's race-resistant file access is verified only there. The Action enforces this at run time and refuses self-hosted, non-Linux, non-Ubuntu, and ARM runners. It never uses the network for anything except downloading the pinned Rust toolchain and the locked crates.
 
-The build downloads the pinned Rust toolchain and the locked crates on a cold runner, which takes a few minutes and needs network access to `static.rust-lang.org` and `crates.io`. If the toolchain and dependencies are already completely cached on the runner, compilation can proceed offline.
+The build downloads the pinned Rust toolchain and the locked crates on a cold runner, which takes approximately 20.4 to 26.0 seconds on the tested GitHub-hosted runners and needs network access to `static.rust-lang.org` and `crates.io`. If the toolchain and dependencies are already completely cached on the runner, compilation can proceed offline.
 
 ## Fork pull requests
 
